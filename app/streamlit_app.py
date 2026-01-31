@@ -162,8 +162,8 @@ if run:
         coach_angles = compute_angles(coach_frames)
         user_angles = compute_angles(user_frames)
 
-    df_coach = angles_to_df(coach_angles)
-    df_user = angles_to_df(user_angles)
+    df_coach = angles_to_df(coach_angles, index=False)
+    df_user = angles_to_df(user_angles, index=False)
 
     coach_csv = processed_dir / "angles_coach.csv"
     user_csv = processed_dir / "angles_user.csv"
