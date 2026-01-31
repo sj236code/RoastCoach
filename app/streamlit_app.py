@@ -1,5 +1,4 @@
 import streamlit as st
-import tempfile
 from pathlib import Path
 import base64
 import sys
@@ -24,7 +23,6 @@ DATA_PROCESSED.mkdir(parents=True, exist_ok=True)
 
 
 # ---------- Helpers ----------
-
 def save_upload(uploaded_file, out_dir: Path, prefix: str) -> Path:
     """Save uploaded file with a unique name to avoid overwriting."""
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -36,10 +34,7 @@ def save_upload(uploaded_file, out_dir: Path, prefix: str) -> Path:
 
 
 def video_small(uploaded_file, width_px: int = 360):
-    """
-    Render a smaller, size-controlled video preview using an HTML <video> tag.
-    This avoids Streamlit's default behavior where st.video can be very large.
-    """
+    """Smaller preview using HTML <video> so it doesn't take over the page."""
     data = uploaded_file.getvalue()
     b64 = base64.b64encode(data).decode("utf-8")
 
@@ -68,21 +63,30 @@ def angles_to_df(angle_frames) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-# ---------- Import backend pipeline (pose -> angles -> segmentation) ----------
+def conf_summary(df: pd.DataFrame) -> str:
+    if "conf" not in df.columns:
+        return "conf: n/a"
+    c = df["conf"].to_numpy(dtype=float)
+    good = np.isfinite(c)
+    if good.sum() == 0:
+        return "conf: n/a"
+    return f"conf mean={np.nanmean(c):.2f}, p10={np.nanpercentile(c,10):.2f}, p50={np.nanpercentile(c,50):.2f}, p90={np.nanpercentile(c,90):.2f}"
 
-# Assumes repo layout:
-# RoastCoach/
-#   app/streamlit_app.py
-#   backend/src/pose.py
-#   backend/src/angles.py
-#   backend/src/segment.py
+
+# ---------- Import backend pipeline (pose -> angles -> segmentation) ----------
 BACKEND_SRC = ROOT / "backend" / "src"
 sys.path.append(str(BACKEND_SRC))
 
 try:
     from pose import extract_pose_frames
     from angles import compute_angles
-    from segment import choose_driver_column, find_reps_from_driver, resample_rep_angles
+    from segment import (
+        choose_driver_column,
+        find_reps_from_driver,
+        filter_reps,
+        mean_std_normalized_rep,
+        resample_rep_angles,
+    )
 except Exception as e:
     st.error("Could not import backend modules. Check your folder structure and filenames.")
     st.exception(e)
@@ -90,7 +94,6 @@ except Exception as e:
 
 
 # ---------- Upload UI ----------
-
 col1, col2 = st.columns(2)
 
 with col1:
@@ -109,18 +112,11 @@ with col2:
         key="user",
     )
 
-coach_path = None
-user_path = None
-
-if coach_file:
-    coach_path = save_upload(coach_file, DATA_RAW, prefix="coach")
-
-if user_file:
-    user_path = save_upload(user_file, DATA_RAW, prefix="user")
+coach_path = save_upload(coach_file, DATA_RAW, prefix="coach") if coach_file else None
+user_path = save_upload(user_file, DATA_RAW, prefix="user") if user_file else None
 
 
 # ---------- Previews ----------
-
 st.divider()
 st.subheader("Previews")
 
@@ -148,13 +144,8 @@ with right:
 
 
 # ---------- Action Button ----------
-
 st.divider()
-run = st.button(
-    "Run analysis",
-    type="primary",
-    disabled=not (coach_path and user_path),
-)
+run = st.button("Run analysis", type="primary", disabled=not (coach_path and user_path))
 
 if run:
     st.info("Running pose extraction + angle computation...")
@@ -172,7 +163,7 @@ if run:
     df_coach = angles_to_df(coach_angles)
     df_user = angles_to_df(user_angles)
 
-    # Save CSVs (robust absolute paths)
+    # Save CSVs
     coach_csv = DATA_PROCESSED / "angles_coach.csv"
     user_csv = DATA_PROCESSED / "angles_user.csv"
     df_coach.to_csv(coach_csv, index=False)
@@ -186,15 +177,15 @@ if run:
     target = "left_knee_flex"
     angle_cols_coach = [c for c in df_coach.columns if c not in ("t", "conf")]
     angle_cols_user = [c for c in df_user.columns if c not in ("t", "conf")]
-    shared = [c for c in angle_cols_coach if c in angle_cols_user]
+    shared_cols = [c for c in angle_cols_coach if c in angle_cols_user]
 
-    if target not in shared and shared:
-        target = shared[0]
-
-    if not shared:
-        st.warning("No angle columns found. This usually means pose landmarks were not detected reliably.")
+    if not shared_cols:
+        st.warning("No shared angle columns found. This usually means pose landmarks were not detected reliably.")
         st.write("Try a clearer video (full body visible, good lighting, minimal occlusion).")
         st.stop()
+
+    if target not in shared_cols:
+        target = shared_cols[0]
 
     st.subheader("Angle Sanity Plot")
     st.caption(f"Showing: `{target}` (coach vs user)")
@@ -218,21 +209,34 @@ if run:
     st.divider()
     st.subheader("Rep Segmentation")
 
-    # Choose driver angle automatically per clip
     coach_driver = choose_driver_column(df_coach)
-    user_driver = choose_driver_column(df_user)
+    user_driver = coach_driver  # force same driver for consistent comparisons
 
     st.write(f"Coach driver: `{coach_driver}`")
-    st.write(f"User driver: `{user_driver}`")
+    st.write(f"User driver (forced): `{user_driver}`")
+    st.caption(f"Coach {conf_summary(df_coach)} | User {conf_summary(df_user)}")
 
-    # Segment
-    coach_reps, coach_driver_smooth = find_reps_from_driver(df_coach, coach_driver)
-    user_reps, user_driver_smooth = find_reps_from_driver(df_user, user_driver)
+    coach_reps_raw, coach_driver_smooth = find_reps_from_driver(df_coach, coach_driver)
+    user_reps_raw, user_driver_smooth = find_reps_from_driver(df_user, user_driver)
 
-    st.write(f"Detected coach reps: **{len(coach_reps)}**")
-    st.write(f"Detected user reps: **{len(user_reps)}**")
+    # NEW: filtering controls
+    st.markdown("### Rep filtering")
+    cA, cB, cC = st.columns([1, 1, 2])
+    with cA:
+        min_q = st.slider("Min rep quality", 0.0, 1.0, 0.35, 0.05)
+    with cB:
+        drop_first = st.checkbox("Drop first rep (setup)", value=True)
+    with cC:
+        st.caption("Tip: Raise min quality to tighten the mean ± std band (cleaner demo).")
 
-    # Plot driver with rep boundaries for debugging
+    coach_reps = filter_reps(coach_reps_raw, min_quality=min_q, drop_first=drop_first)
+    user_reps = filter_reps(user_reps_raw, min_quality=min_q, drop_first=drop_first)
+
+    st.write(
+        f"Detected coach reps: **{len(coach_reps_raw)}** → kept **{len(coach_reps)}** | "
+        f"user reps: **{len(user_reps_raw)}** → kept **{len(user_reps)}**"
+    )
+
     def plot_driver_with_reps(df: pd.DataFrame, driver_col: str, x_s: np.ndarray, reps, title: str):
         fig = plt.figure()
         plt.plot(df["t"], x_s, label=f"{driver_col} (smoothed)")
@@ -247,47 +251,53 @@ if run:
 
     c1, c2 = st.columns(2)
     with c1:
-        st.pyplot(plot_driver_with_reps(
-            df_coach, coach_driver, coach_driver_smooth, coach_reps,
-            "Coach driver + rep boundaries"
-        ))
+        st.pyplot(plot_driver_with_reps(df_coach, coach_driver, coach_driver_smooth, coach_reps, "Coach driver + rep boundaries"))
     with c2:
-        st.pyplot(plot_driver_with_reps(
-            df_user, user_driver, user_driver_smooth, user_reps,
-            "User driver + rep boundaries"
-        ))
+        st.pyplot(plot_driver_with_reps(df_user, user_driver, user_driver_smooth, user_reps, "User driver + rep boundaries"))
 
-    # Resample first rep as proof-of-normalization
+    # ---------- Rep normalization: MEAN ± STD ----------
+    st.divider()
+    st.subheader("Normalized reps (mean ± 1 std)")
+
     if coach_reps and user_reps:
-        st.subheader("Rep Normalization (Resampling)")
+        angle_cols = shared_cols
+        N = st.slider("Normalization length (N)", 50, 200, 100, 10)
 
-        angle_cols = [c for c in df_coach.columns if c not in ("t", "conf")]
-        N = 100
+        # mean/std across all kept reps
+        coach_mean, coach_std, coach_stack = mean_std_normalized_rep(df_coach, coach_reps, angle_cols, N=N)
+        user_mean, user_std, user_stack = mean_std_normalized_rep(df_user, user_reps, angle_cols, N=N)
 
-        coach_rep0 = resample_rep_angles(df_coach, coach_reps[0], angle_cols, N=N)
-        user_rep0 = resample_rep_angles(df_user, user_reps[0], angle_cols, N=N)
-
-        st.success(f"Resampled first rep to {N} timesteps: coach={coach_rep0.shape}, user={user_rep0.shape}")
-
-        # Plot same target if possible
-        plot_joint = target if target in angle_cols else angle_cols[0]
+        # default plot joint: driver if available
+        default_idx = angle_cols.index(coach_driver) if coach_driver in angle_cols else 0
+        plot_joint = st.selectbox("Plot joint (normalized)", options=angle_cols, index=default_idx)
         j = angle_cols.index(plot_joint)
+        tt = np.linspace(0, 1, N)
 
-        fig2 = plt.figure()
-        plt.plot(np.linspace(0, 1, N), coach_rep0[:, j], label="coach rep0")
-        plt.plot(np.linspace(0, 1, N), user_rep0[:, j], label="user rep0")
+        fig3 = plt.figure()
+        plt.plot(tt, coach_mean[:, j], label="coach mean")
+        plt.plot(tt, user_mean[:, j], label="user mean")
+        # show only user band to reduce clutter (can add coach band too if you want)
+        plt.fill_between(tt, user_mean[:, j] - user_std[:, j], user_mean[:, j] + user_std[:, j], alpha=0.2)
         plt.xlabel("normalized time (0→1)")
         plt.ylabel("degrees")
-        plt.title(f"Resampled rep (N={N}) — {plot_joint}")
+        plt.title(f"Mean normalized rep (±1 std) — {plot_joint}")
         plt.legend()
-        st.pyplot(fig2)
+        st.pyplot(fig3)
 
-        with st.expander("Show resampled arrays (first 10 rows)"):
-            st.write("Angle columns:", angle_cols)
-            st.write("Coach rep0 (first 10):")
-            st.dataframe(pd.DataFrame(coach_rep0[:10], columns=angle_cols), use_container_width=True)
-            st.write("User rep0 (first 10):")
-            st.dataframe(pd.DataFrame(user_rep0[:10], columns=angle_cols), use_container_width=True)
+        # optional: show a single rep overlay for debugging
+        with st.expander("Debug: overlay first kept rep vs mean"):
+            coach_rep0 = resample_rep_angles(df_coach, coach_reps[0], angle_cols, N=N)
+            user_rep0 = resample_rep_angles(df_user, user_reps[0], angle_cols, N=N)
+            fig4 = plt.figure()
+            plt.plot(tt, coach_rep0[:, j], label="coach rep0")
+            plt.plot(tt, coach_mean[:, j], label="coach mean")
+            plt.plot(tt, user_rep0[:, j], label="user rep0")
+            plt.plot(tt, user_mean[:, j], label="user mean")
+            plt.xlabel("normalized time (0→1)")
+            plt.ylabel("degrees")
+            plt.title(f"Rep0 vs mean — {plot_joint}")
+            plt.legend()
+            st.pyplot(fig4)
+
     else:
-        st.warning("No reps detected in one or both videos. Try adjusting segmentation params or using a clearer, more repetitive motion.")
-        st.caption("Next tuning knobs: smooth_window, min_rep_seconds, max_rep_seconds in find_reps_from_driver().")
+        st.warning("Not enough reps kept after filtering. Lower min quality or uncheck 'drop first rep'.")
