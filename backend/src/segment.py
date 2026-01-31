@@ -1,16 +1,19 @@
 # backend/src/segment.py
 from __future__ import annotations
+
 from dataclasses import dataclass
-from typing import List, Tuple, Optional, Dict
+from typing import List, Tuple, Optional
 import numpy as np
 import pandas as pd
+
 
 @dataclass
 class Rep:
     start_idx: int
     end_idx: int
-    mid_idx: int  # typically deepest point / max flex point
+    mid_idx: int  # deepest point / max flex point
     quality: float
+
 
 def _moving_average(x: np.ndarray, w: int) -> np.ndarray:
     if w <= 1:
@@ -18,6 +21,7 @@ def _moving_average(x: np.ndarray, w: int) -> np.ndarray:
     w = int(w)
     kernel = np.ones(w) / w
     return np.convolve(x, kernel, mode="same")
+
 
 def _nan_interp(x: np.ndarray) -> np.ndarray:
     """Linearly interpolate NaNs (only for segmentation/resampling)."""
@@ -29,6 +33,7 @@ def _nan_interp(x: np.ndarray) -> np.ndarray:
         return x
     return np.interp(idx, idx[good], x[good])
 
+
 def _score_driver(sig: np.ndarray, conf: Optional[np.ndarray] = None) -> float:
     """Heuristic: want few NaNs + decent amplitude + smooth periodic energy."""
     x = sig.astype(float)
@@ -39,10 +44,9 @@ def _score_driver(sig: np.ndarray, conf: Optional[np.ndarray] = None) -> float:
 
     xi = _nan_interp(x)
     amp = float(np.nanpercentile(xi, 95) - np.nanpercentile(xi, 5))
-    if amp < 10:  # too flat to segment
+    if amp < 10:
         return 0.0
 
-    # Smooth periodicity proxy: ratio of low-frequency energy
     y = xi - np.mean(xi)
     yf = np.fft.rfft(y)
     p = np.abs(yf) ** 2
@@ -59,11 +63,8 @@ def _score_driver(sig: np.ndarray, conf: Optional[np.ndarray] = None) -> float:
 
     return frac_good * (amp / 90.0) * lf_ratio * conf_term
 
+
 def choose_driver_column(df: pd.DataFrame) -> str:
-    """
-    Picks an angle column likely to be the "driver" for segmentation.
-    Priority is knees/hips/trunk for many lower-body movements, then elbows.
-    """
     candidates_priority = [
         "left_knee_flex", "right_knee_flex",
         "left_hip_flex", "right_hip_flex",
@@ -77,14 +78,53 @@ def choose_driver_column(df: pd.DataFrame) -> str:
     conf = df["conf"].to_numpy() if "conf" in df.columns else None
     scores = {c: _score_driver(df[c].to_numpy(), conf=conf) for c in available}
 
-    # If a knee is "good enough", pick best knee
     knee = [c for c in available if "knee" in c]
     if knee:
         best_knee = max(knee, key=scores.get)
-        if scores[best_knee] >= 0.15:  # tune 0.10–0.25
+        if scores[best_knee] >= 0.15:
             return best_knee
 
     return max(scores, key=scores.get)
+
+
+def _local_maxima_indices(x: np.ndarray) -> np.ndarray:
+    """
+    Stable maxima detector:
+    local max if x[i] >= neighbors AND strictly greater than at least one neighbor.
+    Helps with flat/rounded tops.
+    """
+    xm1 = x[:-2]
+    x0 = x[1:-1]
+    xp1 = x[2:]
+    is_ge = (x0 >= xm1) & (x0 >= xp1)
+    is_strict = (x0 > xm1) | (x0 > xp1)
+    idx = np.where(is_ge & is_strict)[0] + 1
+    return idx
+
+
+def _prune_peaks_by_time(
+    peaks: np.ndarray,
+    t: np.ndarray,
+    x: np.ndarray,
+    min_peak_distance_s: float,
+) -> np.ndarray:
+    """
+    Enforce minimum time between peaks by keeping the higher peak within each window.
+    """
+    if len(peaks) <= 1:
+        return peaks
+
+    keep = [int(peaks[0])]
+    for p in peaks[1:]:
+        p = int(p)
+        last = keep[-1]
+        if (t[p] - t[last]) >= min_peak_distance_s:
+            keep.append(p)
+        else:
+            if x[p] > x[last]:
+                keep[-1] = p
+    return np.array(keep, dtype=int)
+
 
 def find_reps_from_driver(
     df: pd.DataFrame,
@@ -92,56 +132,90 @@ def find_reps_from_driver(
     smooth_window: int = 9,
     min_rep_seconds: float = 0.7,
     max_rep_seconds: float = 8.0,
+    min_peak_distance_s: float = 0.5,
+    min_amp_deg: float = 15.0,
+    min_dip_deg: float = 10.0,
+    mid_frac_bounds: Tuple[float, float] = (0.20, 0.80),
+    end_buffer_s: float = 0.35,
 ) -> Tuple[List[Rep], np.ndarray]:
     """
     Segment reps from a driver angle.
 
-    Assumes knee/elbow flex behave like:
-      high (extension/top) -> dip (flexion/bottom) -> high
-    Reps are detected between consecutive local maxima (tops).
+    Rep = top (max) -> bottom (min) -> top (max)
+
+    Key reinforces:
+    - prune peaks too close (wavering tops)
+    - require meaningful amplitude
+    - require BOTH endpoints are true tops above the valley (prevents half reps)
+    - require valley is not at edges (prevents partial rep + plateau splits)
+    - ignore peaks too close to end of clip (optional)
     """
     if "t" not in df.columns:
         raise ValueError("Dataframe must contain time column 't' in seconds.")
+
     t = df["t"].to_numpy().astype(float)
     x_raw = df[driver_col].to_numpy().astype(float)
 
-    # Interpolate NaNs for segmentation only
     x = _nan_interp(x_raw)
-
-    # Smooth
     x_s = _moving_average(x, smooth_window)
 
-    # Local maxima: sign goes + to -
-    dx = np.diff(x_s)
-    sign = np.sign(dx)
-    maxima = np.where((np.hstack([sign, 0]) < 0) & (np.hstack([0, sign]) > 0))[0]
+    peaks = _local_maxima_indices(x_s)
+    if len(peaks) < 2:
+        return [], x_s
+
+    # Optional: drop peaks too close to the end of the signal
+    t_end = float(t[-1])
+    peaks = peaks[t[peaks] <= (t_end - end_buffer_s)]
+    if len(peaks) < 2:
+        return [], x_s
+
+    peaks = _prune_peaks_by_time(peaks, t, x_s, min_peak_distance_s=min_peak_distance_s)
+    if len(peaks) < 2:
+        return [], x_s
 
     reps: List[Rep] = []
-    if len(maxima) < 2:
-        return reps, x_s
 
-    for i in range(len(maxima) - 1):
-        a = int(maxima[i])
-        b = int(maxima[i + 1])
+    for i in range(len(peaks) - 1):
+        a = int(peaks[i])
+        b = int(peaks[i + 1])
         if b <= a + 3:
             continue
 
-        dur = t[b] - t[a]
+        dur = float(t[b] - t[a])
         if dur < min_rep_seconds or dur > max_rep_seconds:
             continue
 
         seg = x_s[a:b + 1]
+        seg_max = float(np.max(seg))
+        seg_min = float(np.min(seg))
+        amp = seg_max - seg_min
+        if amp < min_amp_deg:
+            continue
+
+        # deepest point
         mid_local = int(np.argmin(seg))
         mid = a + mid_local
 
-        amp = float(np.max(seg) - np.min(seg))
+        # valley must be reasonably centered (avoid partial reps / plateau splits)
+        frac = mid_local / max(1, (len(seg) - 1))
+        lo, hi = mid_frac_bounds
+        if frac < lo or frac > hi:
+            continue
+
+        # **Critical fix**: BOTH endpoints must be "tops" above the valley
+        # (prevents counting a half rep that ends without returning to top)
+        top_min = float(min(x_s[a], x_s[b]))
+        dip_two_sided = top_min - seg_min
+        if dip_two_sided < min_dip_deg:
+            continue
+
         conf_q = float(np.nanmean(df["conf"].to_numpy()[a:b + 1])) if "conf" in df.columns else 1.0
         quality = float(np.clip((amp / 90.0) * conf_q, 0.0, 1.0))
 
         reps.append(Rep(start_idx=a, end_idx=b, mid_idx=mid, quality=quality))
 
-    reps = [r for r in reps if r.end_idx > r.start_idx]
     return reps, x_s
+
 
 def resample_rep_angles(
     df: pd.DataFrame,
@@ -168,20 +242,21 @@ def resample_rep_angles(
 
     return out
 
-# ------------------- NEW HELPERS -------------------
+
+# ------------------- Optional helpers -------------------
 
 def filter_reps(
     reps: List[Rep],
-    min_quality: float = 0.35,
-    drop_first: bool = True,
+    min_quality: float = 0.20,
+    drop_first: bool = False,
 ) -> List[Rep]:
-    """Filter low-quality reps and optionally drop the first rep (often setup)."""
     if not reps:
         return []
     reps_sorted = sorted(reps, key=lambda r: r.start_idx)
-    if drop_first and len(reps_sorted) >= 2:
+    if drop_first and len(reps_sorted) >= 3:
         reps_sorted = reps_sorted[1:]
     return [r for r in reps_sorted if r.quality >= min_quality]
+
 
 def mean_std_normalized_rep(
     df: pd.DataFrame,
@@ -189,21 +264,13 @@ def mean_std_normalized_rep(
     angle_cols: List[str],
     N: int = 100,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """
-    Returns (mean, std, stack) where:
-      stack shape = (R, N, J)
-      mean/std shape = (N, J)
-    """
     if not reps:
         J = len(angle_cols)
         empty = np.full((N, J), np.nan)
         return empty, empty, np.full((0, N, J), np.nan)
 
-    mats = []
-    for r in reps:
-        mats.append(resample_rep_angles(df, r, angle_cols, N=N))
+    mats = [resample_rep_angles(df, r, angle_cols, N=N) for r in reps]
     stack = np.stack(mats, axis=0)  # (R, N, J)
-
     mean = np.nanmean(stack, axis=0)
     std = np.nanstd(stack, axis=0)
     return mean, std, stack
