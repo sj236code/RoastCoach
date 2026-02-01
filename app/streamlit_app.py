@@ -3,6 +3,7 @@ from pathlib import Path
 import base64
 import sys
 import uuid
+import json
 
 import numpy as np
 import pandas as pd
@@ -71,6 +72,69 @@ def conf_summary(df: pd.DataFrame) -> str:
     if good.sum() == 0:
         return "conf: n/a"
     return f"conf mean={np.nanmean(c):.2f}, p10={np.nanpercentile(c,10):.2f}, p50={np.nanpercentile(c,50):.2f}, p90={np.nanpercentile(c,90):.2f}"
+
+
+def phase_from_t(idx_peak: int, idx_bottom: int, N: int, bottom_window_frac: float = 0.08) -> str:
+    """Classify deviation timepoint as descent/bottom/ascent using bottom index."""
+    w = int(bottom_window_frac * N)
+    lo = max(0, idx_bottom - w)
+    hi = min(N - 1, idx_bottom + w)
+    if idx_peak < lo:
+        return "descent"
+    if idx_peak <= hi:
+        return "bottom"
+    return "ascent"
+
+
+def severity_from_deg(deg_outside: float, mild=5.0, moderate=12.0, severe=20.0) -> str:
+    if deg_outside >= severe:
+        return "severe"
+    if deg_outside >= moderate:
+        return "moderate"
+    if deg_outside >= mild:
+        return "mild"
+    return "none"
+
+
+def make_tip_from_events(events, stability, confidence, min_stability=0.6, min_conf=0.6) -> dict:
+    """Constrained, safe coaching tip (no LLM)."""
+    if stability < min_stability or confidence < min_conf:
+        return {
+            "one_sentence_tip": "Re-record: keep your whole body in frame and do 3–5 consistent reps.",
+            "target_joint": "n/a",
+            "phase": "n/a",
+        }
+    if not events:
+        return {
+            "one_sentence_tip": "Nice work—your motion stayed within the coach envelope for the main joints.",
+            "target_joint": "n/a",
+            "phase": "n/a",
+        }
+
+    sev_rank = {"severe": 3, "moderate": 2, "mild": 1}
+    events_sorted = sorted(
+        events,
+        key=lambda e: (sev_rank.get(e["severity"], 0), e["deg_outside"], e["persistence"]),
+        reverse=True,
+    )
+    e = events_sorted[0]
+    joint = e["joint"]
+    phase = e["phase"]
+
+    # Keep it kinematics-only and short
+    if e["direction"] == "below_reference":
+        msg = f"Try increasing {joint} motion during {phase} to match the coach."
+    elif e["direction"] == "above_reference":
+        msg = f"Try reducing {joint} motion during {phase} to match the coach."
+    else:
+        msg = f"Keep {joint} steadier during {phase}."
+
+    # <= 20 words
+    words = msg.split()
+    if len(words) > 20:
+        msg = " ".join(words[:20])
+
+    return {"one_sentence_tip": msg, "target_joint": joint, "phase": phase}
 
 
 # ---------- Import backend pipeline (pose -> angles -> segmentation) ----------
@@ -180,7 +244,7 @@ if run:
     shared_cols = [c for c in angle_cols_coach if c in angle_cols_user]
 
     if not shared_cols:
-        st.warning("No shared angle columns found. This usually means pose landmarks were not detected reliably.")
+        st.warning("No shared angle columns found. Pose landmarks may be failing.")
         st.write("Try a clearer video (full body visible, good lighting, minimal occlusion).")
         st.stop()
 
@@ -199,12 +263,6 @@ if run:
     plt.legend()
     st.pyplot(fig)
 
-    with st.expander("Show data preview"):
-        st.write("Coach angles (head):")
-        st.dataframe(df_coach.head(10), use_container_width=True)
-        st.write("User angles (head):")
-        st.dataframe(df_user.head(10), use_container_width=True)
-
     # ---------- Rep segmentation ----------
     st.divider()
     st.subheader("Rep Segmentation")
@@ -219,7 +277,6 @@ if run:
     coach_reps_raw, coach_driver_smooth = find_reps_from_driver(df_coach, coach_driver)
     user_reps_raw, user_driver_smooth = find_reps_from_driver(df_user, user_driver)
 
-    # NEW: filtering controls
     st.markdown("### Rep filtering")
     cA, cB, cC = st.columns([1, 1, 2])
     with cA:
@@ -227,7 +284,7 @@ if run:
     with cB:
         drop_first = st.checkbox("Drop first rep (setup)", value=True)
     with cC:
-        st.caption("Tip: Raise min quality to tighten the mean ± std band (cleaner demo).")
+        st.caption("Tip: Raise min quality to tighten the reference band (cleaner demo).")
 
     coach_reps = filter_reps(coach_reps_raw, min_quality=min_q, drop_first=drop_first)
     user_reps = filter_reps(user_reps_raw, min_quality=min_q, drop_first=drop_first)
@@ -255,49 +312,172 @@ if run:
     with c2:
         st.pyplot(plot_driver_with_reps(df_user, user_driver, user_driver_smooth, user_reps, "User driver + rep boundaries"))
 
-    # ---------- Rep normalization: MEAN ± STD ----------
+    # ---------- Normalization (mean ± std) ----------
     st.divider()
     st.subheader("Normalized reps (mean ± 1 std)")
 
-    if coach_reps and user_reps:
-        angle_cols = shared_cols
-        N = st.slider("Normalization length (N)", 50, 200, 100, 10)
-
-        # mean/std across all kept reps
-        coach_mean, coach_std, coach_stack = mean_std_normalized_rep(df_coach, coach_reps, angle_cols, N=N)
-        user_mean, user_std, user_stack = mean_std_normalized_rep(df_user, user_reps, angle_cols, N=N)
-
-        # default plot joint: driver if available
-        default_idx = angle_cols.index(coach_driver) if coach_driver in angle_cols else 0
-        plot_joint = st.selectbox("Plot joint (normalized)", options=angle_cols, index=default_idx)
-        j = angle_cols.index(plot_joint)
-        tt = np.linspace(0, 1, N)
-
-        fig3 = plt.figure()
-        plt.plot(tt, coach_mean[:, j], label="coach mean")
-        plt.plot(tt, user_mean[:, j], label="user mean")
-        # show only user band to reduce clutter (can add coach band too if you want)
-        plt.fill_between(tt, user_mean[:, j] - user_std[:, j], user_mean[:, j] + user_std[:, j], alpha=0.2)
-        plt.xlabel("normalized time (0→1)")
-        plt.ylabel("degrees")
-        plt.title(f"Mean normalized rep (±1 std) — {plot_joint}")
-        plt.legend()
-        st.pyplot(fig3)
-
-        # optional: show a single rep overlay for debugging
-        with st.expander("Debug: overlay first kept rep vs mean"):
-            coach_rep0 = resample_rep_angles(df_coach, coach_reps[0], angle_cols, N=N)
-            user_rep0 = resample_rep_angles(df_user, user_reps[0], angle_cols, N=N)
-            fig4 = plt.figure()
-            plt.plot(tt, coach_rep0[:, j], label="coach rep0")
-            plt.plot(tt, coach_mean[:, j], label="coach mean")
-            plt.plot(tt, user_rep0[:, j], label="user rep0")
-            plt.plot(tt, user_mean[:, j], label="user mean")
-            plt.xlabel("normalized time (0→1)")
-            plt.ylabel("degrees")
-            plt.title(f"Rep0 vs mean — {plot_joint}")
-            plt.legend()
-            st.pyplot(fig4)
-
-    else:
+    if not (coach_reps and user_reps):
         st.warning("Not enough reps kept after filtering. Lower min quality or uncheck 'drop first rep'.")
+        st.stop()
+
+    angle_cols = shared_cols
+    N = st.slider("Normalization length (N)", 50, 200, 100, 10)
+    tt = np.linspace(0, 1, N)
+
+    coach_mean, coach_std, coach_stack = mean_std_normalized_rep(df_coach, coach_reps, angle_cols, N=N)
+    user_mean, user_std, user_stack = mean_std_normalized_rep(df_user, user_reps, angle_cols, N=N)
+
+    default_idx = angle_cols.index(coach_driver) if coach_driver in angle_cols else 0
+    plot_joint = st.selectbox("Plot joint (normalized)", options=angle_cols, index=default_idx)
+    j = angle_cols.index(plot_joint)
+
+    fig3 = plt.figure()
+    plt.plot(tt, coach_mean[:, j], label="coach mean")
+    plt.plot(tt, user_mean[:, j], label="user mean")
+    plt.fill_between(tt, user_mean[:, j] - user_std[:, j], user_mean[:, j] + user_std[:, j], alpha=0.2)
+    plt.xlabel("normalized time (0→1)")
+    plt.ylabel("degrees")
+    plt.title(f"Mean normalized rep (±1 std) — {plot_joint}")
+    plt.legend()
+    st.pyplot(fig3)
+
+    # ---------- NEW: Reference Envelope Builder (Coach) ----------
+    st.divider()
+    st.subheader("Reference Envelope (Coach) + Stability")
+
+    env_method = st.selectbox("Envelope method", ["std*k", "percentile (10–90)"], index=0)
+    k = st.slider("k (std multiplier)", 0.5, 3.0, 1.5, 0.1)
+
+    if env_method == "std*k":
+        tol = coach_std * k
+        ref_lo = coach_mean - tol
+        ref_hi = coach_mean + tol
+        stability = float(1.0 / (1.0 + np.nanmean(coach_std)))
+    else:
+        ref_lo = np.nanpercentile(coach_stack, 10, axis=0)
+        ref_hi = np.nanpercentile(coach_stack, 90, axis=0)
+        band_width = float(np.nanmean(ref_hi - ref_lo))
+        stability = float(1.0 / (1.0 + band_width))
+
+    st.write(f"Reference stability (proxy): **{stability:.2f}**")
+    min_stability = st.slider("Warn if stability < ", 0.1, 1.0, 0.6, 0.05)
+    if stability < min_stability:
+        st.warning("Coach reps vary a lot. Envelope may be wide (still continuing).")
+
+    # Visualize envelope for selected joint
+    fig_env = plt.figure()
+    plt.plot(tt, coach_mean[:, j], label="coach mean")
+    plt.fill_between(tt, ref_lo[:, j], ref_hi[:, j], alpha=0.18, label="coach envelope")
+    plt.plot(tt, user_mean[:, j], label="user mean")
+    plt.xlabel("normalized time (0→1)")
+    plt.ylabel("degrees")
+    plt.title(f"Coach envelope vs user mean — {plot_joint}")
+    plt.legend()
+    st.pyplot(fig_env)
+
+    # Save envelope artifact
+    env_path = DATA_PROCESSED / "reference_envelope_coach.npz"
+    np.savez(
+        env_path,
+        angle_cols=np.array(angle_cols, dtype=object),
+        coach_mean=coach_mean,
+        ref_lo=ref_lo,
+        ref_hi=ref_hi,
+        stability=np.array([stability]),
+        N=np.array([N]),
+    )
+    st.caption(f"Saved envelope: `{env_path}`")
+
+    # ---------- NEW: Deviation Detection (rep-by-rep) ----------
+    st.divider()
+    st.subheader("Deviation Detection (User reps vs Coach envelope)")
+
+    mild = st.slider("Mild threshold (deg outside)", 1.0, 20.0, 5.0, 0.5)
+    moderate = st.slider("Moderate threshold (deg outside)", 5.0, 40.0, 12.0, 0.5)
+    severe = st.slider("Severe threshold (deg outside)", 10.0, 60.0, 20.0, 0.5)
+    persistent_thresh = st.slider("Persistent if outside > (%)", 0, 100, 20, 5) / 100.0
+    bottom_window = st.slider("Bottom window size (normalized %)", 2, 20, 8, 1) / 100.0
+
+    driver_idx = angle_cols.index(coach_driver) if coach_driver in angle_cols else 0
+
+    analyses = []
+    for ridx, r in enumerate(user_reps):
+        user_mat = resample_rep_angles(df_user, r, angle_cols, N=N)  # (N, J)
+
+        # find "bottom" using driver joint (min flex angle per your definition)
+        idx_bottom = int(np.nanargmin(user_mat[:, driver_idx]))
+
+        # pointwise outside envelope
+        below = ref_lo - user_mat
+        above = user_mat - ref_hi
+        over = np.maximum(0.0, np.maximum(below, above))  # (N, J)
+
+        max_over = np.nanmax(over, axis=0)  # (J,)
+        persist = np.nanmean(over > 0, axis=0)  # (J,)
+
+        # top-3 joints by max outside
+        top_idx = np.argsort(max_over)[::-1][:3]
+
+        events = []
+        for jj in top_idx:
+            deg = float(max_over[jj]) if np.isfinite(max_over[jj]) else 0.0
+            sev_label = severity_from_deg(deg, mild=mild, moderate=moderate, severe=severe)
+            if sev_label == "none":
+                continue
+
+            idx_peak = int(np.nanargmax(over[:, jj]))
+            phase = phase_from_t(idx_peak, idx_bottom, N, bottom_window_frac=bottom_window)
+
+            diff_val = float(user_mat[idx_peak, jj] - coach_mean[idx_peak, jj])
+            direction = "above_reference" if diff_val > 0 else "below_reference"
+
+            events.append({
+                "joint": angle_cols[jj],
+                "phase": phase,
+                "direction": direction,
+                "deg_outside": deg,
+                "persistence": float(persist[jj]),
+                "severity": sev_label,
+                "persistence_label": "persistent" if float(persist[jj]) >= persistent_thresh else "brief",
+            })
+
+        # confidence = pose mean conf + rep quality
+        pose_conf = float(np.nanmean(df_user["conf"])) if "conf" in df_user.columns else 1.0
+        rep_conf = float(np.clip(r.quality, 0.0, 1.0))
+        confidence = float(0.5 * pose_conf + 0.5 * rep_conf)
+
+        analyses.append({
+            "rep_id": ridx,
+            "confidence": confidence,
+            "reference_stability": stability,
+            "events": events
+        })
+
+    st.write(f"Analyzed **{len(analyses)}** user reps.")
+    with st.expander("Preview analysis JSON (first 2 reps)"):
+        st.json(analyses[:2])
+
+    # Save analysis artifact
+    analysis_path = DATA_PROCESSED / "analysis.json"
+    analysis_path.write_text(json.dumps(analyses, indent=2))
+    st.caption(f"Saved analysis: `{analysis_path}`")
+
+    # ---------- NEW: One-sentence coaching cue ----------
+    st.divider()
+    st.subheader("Coaching cue (constrained, no LLM yet)")
+
+    min_conf_required = st.slider("Min confidence required", 0.0, 1.0, 0.6, 0.05)
+    rep_pick = st.selectbox("Choose rep to coach", options=list(range(len(analyses))), index=0)
+
+    chosen = analyses[rep_pick]
+    tip = make_tip_from_events(
+        chosen["events"],
+        stability=chosen["reference_stability"],
+        confidence=chosen["confidence"],
+        min_stability=min_stability,
+        min_conf=min_conf_required,
+    )
+
+    st.success(tip["one_sentence_tip"])
+    with st.expander("Tip JSON"):
+        st.json(tip)
