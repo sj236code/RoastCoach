@@ -32,10 +32,299 @@ except Exception:
 
 
 # ----------------------------- Page config -----------------------------
-st.set_page_config(page_title="RoastCoach", layout="wide")
+st.set_page_config(page_title="RoastCoach", layout="wide", initial_sidebar_state="collapsed")
 
-st.title("RoastCoach — Exercise-Agnostic Motion Fingerprinting")
-st.caption("Upload a coach reference video, then a user attempt. We'll compare joint-angle trajectories.")
+# Custom CSS for dark, modern, sleek UI inspired by Cluely and Notion
+st.markdown("""
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+    * {
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    }
+
+    /* Dark theme base */
+    .stApp {
+        background: #191919;
+        color: #e5e5e5;
+    }
+
+    .main {
+        background: #191919;
+    }
+
+    .main > div {
+        padding-top: 1.5rem;
+        max-width: 1400px;
+        margin: 0 auto;
+        background: #191919;
+    }
+
+    /* Typography - light text on dark */
+    h1 {
+        color: #ffffff;
+        font-weight: 700;
+        font-size: 2.5rem;
+        letter-spacing: -0.02em;
+        margin-bottom: 0.25rem;
+        line-height: 1.2;
+    }
+
+    h2 {
+        color: #e5e5e5;
+        font-weight: 600;
+        font-size: 1.5rem;
+        letter-spacing: -0.01em;
+        margin-top: 2.5rem;
+        margin-bottom: 1rem;
+        line-height: 1.3;
+    }
+
+    h3 {
+        color: #d4d4d4;
+        font-weight: 600;
+        font-size: 1.25rem;
+        letter-spacing: -0.01em;
+        margin-top: 1.5rem;
+        margin-bottom: 0.75rem;
+        line-height: 1.4;
+    }
+
+    p, .stMarkdown p {
+        color: #b3b3b3;
+        font-size: 0.95rem;
+        line-height: 1.6;
+        font-weight: 400;
+    }
+
+    /* Modern, clickable buttons - dark theme */
+    .stButton > button {
+        width: 100%;
+        border-radius: 6px;
+        font-weight: 500;
+        font-size: 0.95rem;
+        padding: 0.75rem 1.5rem;
+        transition: all 0.2s ease;
+        border: 1px solid #404040;
+        background: #2a2a2a;
+        color: #ffffff;
+        cursor: pointer;
+    }
+
+    .stButton > button:hover {
+        background: #353535;
+        border-color: #4a4a4a;
+        transform: translateY(-1px);
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    }
+
+    .stButton > button:active {
+        transform: translateY(0);
+        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
+    }
+
+    .stButton > button:focus {
+        box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.1);
+        outline: none;
+    }
+
+    .stButton > button:disabled {
+        background: #2a2a2a;
+        border-color: #2a2a2a;
+        color: #666666;
+        cursor: not-allowed;
+        opacity: 0.5;
+    }
+
+    /* Dark theme metrics */
+    [data-testid="stMetricValue"] {
+        font-size: 1.75rem;
+        font-weight: 600;
+        color: #ffffff;
+        letter-spacing: -0.01em;
+    }
+
+    [data-testid="stMetricLabel"] {
+        font-size: 0.875rem;
+        font-weight: 500;
+        color: #9a9a9a;
+        text-transform: uppercase;
+        letter-spacing: 0.02em;
+    }
+
+    [data-testid="stMetricDelta"] {
+        font-size: 0.875rem;
+        font-weight: 500;
+    }
+
+    /* Dark metric containers */
+    div[data-testid="stMetricContainer"] {
+        background: #252525;
+        border: 1px solid #333333;
+        border-radius: 8px;
+        padding: 1.25rem;
+        transition: all 0.2s ease;
+    }
+
+    div[data-testid="stMetricContainer"]:hover {
+        border-color: #404040;
+        background: #2a2a2a;
+    }
+
+    /* Dark theme alerts */
+    .stSuccess {
+        border-radius: 6px;
+        padding: 0.875rem 1rem;
+        border-left: 3px solid #10b981;
+        background: rgba(16, 185, 129, 0.1);
+        color: #6ee7b7;
+    }
+
+    .stInfo {
+        border-radius: 6px;
+        padding: 0.875rem 1rem;
+        border-left: 3px solid #3b82f6;
+        background: rgba(59, 130, 246, 0.1);
+        color: #93c5fd;
+    }
+
+    .stWarning {
+        border-radius: 6px;
+        padding: 0.875rem 1rem;
+        border-left: 3px solid #f59e0b;
+        background: rgba(245, 158, 11, 0.1);
+        color: #fcd34d;
+    }
+
+    .stError {
+        border-radius: 6px;
+        padding: 0.875rem 1rem;
+        border-left: 3px solid #ef4444;
+        background: rgba(239, 68, 68, 0.1);
+        color: #fca5a5;
+    }
+
+    div[data-testid="stExpander"] {
+        border-radius: 6px;
+        border: 1px solid #333333;
+        background: #252525;
+    }
+
+    .stCaption {
+        color: #9a9a9a;
+        font-size: 0.875rem;
+        font-weight: 400;
+    }
+
+    /* Dark dividers */
+    hr {
+        border: none;
+        border-top: 1px solid #333333;
+        margin: 2rem 0;
+    }
+
+    /* Dark selectboxes and inputs */
+    .stSelectbox > div > div {
+        border-radius: 6px;
+        border: 1px solid #333333;
+        background: #252525;
+        color: #e5e5e5;
+    }
+
+    .stSelectbox > div > div:hover {
+        border-color: #404040;
+        background: #2a2a2a;
+    }
+
+    .stTextInput > div > div > input {
+        border-radius: 6px;
+        border: 1px solid #333333;
+        font-size: 0.95rem;
+        background: #252525;
+        color: #e5e5e5;
+    }
+
+    .stTextInput > div > div > input:focus {
+        border-color: #4a4a4a;
+        box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.05);
+        background: #2a2a2a;
+    }
+
+    .stTextInput > div > div > input::placeholder {
+        color: #666666;
+    }
+
+    /* Dark dataframes */
+    .dataframe {
+        border-radius: 6px;
+        border: 1px solid #333333;
+        background: #252525;
+        color: #e5e5e5;
+    }
+
+    /* Dark links */
+    a {
+        color: #60a5fa;
+        text-decoration: none;
+        font-weight: 500;
+    }
+
+    a:hover {
+        color: #93c5fd;
+        text-decoration: underline;
+    }
+
+    /* Dark file uploader */
+    .stFileUploader > div {
+        border-radius: 6px;
+        border: 2px dashed #404040;
+        background: #252525;
+        transition: all 0.2s ease;
+    }
+
+    .stFileUploader > div:hover {
+        border-color: #4a4a4a;
+        background: #2a2a2a;
+    }
+
+    /* Dark checkbox and slider */
+    .stCheckbox label {
+        color: #e5e5e5;
+    }
+
+    .stSlider label {
+        color: #e5e5e5;
+    }
+
+    /* Dark tabs */
+    .stTabs [data-baseweb="tab-list"] {
+        background: #191919;
+        border-bottom: 1px solid #333333;
+    }
+
+    .stTabs [data-baseweb="tab"] {
+        color: #9a9a9a;
+    }
+
+    .stTabs [aria-selected="true"] {
+        color: #ffffff;
+    }
+
+    /* Subtle animations */
+    @keyframes fadeIn {
+        from { opacity: 0; transform: translateY(4px); }
+        to { opacity: 1; transform: translateY(0); }
+    }
+
+    .main > div {
+        animation: fadeIn 0.3s ease-out;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
+st.title("RoastCoach")
+st.markdown("### Exercise-Agnostic Motion Fingerprinting")
+st.caption("Upload a coach reference video, then a user attempt. We'll compare joint-angle trajectories and provide personalized feedback.")
 
 
 # ----------------------------- Paths -----------------------------
@@ -116,6 +405,12 @@ def ss_init():
         "s3_last_error": None,
         "artifacts_local": {},  # file paths for this run (filled after analysis)
         "exercise_label": "",
+        # processing flags
+        "processing_complete": False,
+        "summary_generated": False,
+        "evolution_data": None,
+        "coach_video_s3_key": None,
+        "user_video_s3_key": None,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -334,6 +629,296 @@ def make_tip_from_events(
     return _event_to_tip(best)
 
 
+# ----------------------------- Summary Dashboard Helpers -----------------------------
+def extract_analysis_summary(analyses: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Extract summary statistics from analyses list."""
+    if not analyses:
+        return {
+            "total_reps": 0,
+            "avg_confidence": 0.0,
+            "severity_counts": {"severe": 0, "moderate": 0, "mild": 0, "none": 0},
+            "top_issues": [],
+            "max_deviation": 0.0,
+            "avg_stability": 0.0,
+        }
+
+    total_reps = len(analyses)
+    confidences = [a.get("confidence", 0.0) for a in analyses]
+    avg_confidence = float(np.nanmean(confidences)) if confidences else 0.0
+
+    severity_counts = {"severe": 0, "moderate": 0, "mild": 0, "none": 0}
+    max_deviation = 0.0
+    top_issues = []
+    stabilities = []
+
+    for analysis in analyses:
+        events = analysis.get("events", [])
+        stabilities.append(analysis.get("reference_stability", 0.0))
+
+        for event in events:
+            sev = event.get("severity", "none")
+            if sev in severity_counts:
+                severity_counts[sev] += 1
+
+            deg = float(event.get("deg_outside", 0.0))
+            if deg > max_deviation:
+                max_deviation = deg
+
+            if sev in ("severe", "moderate"):
+                top_issues.append({
+                    "joint": event.get("joint", "n/a"),
+                    "phase": event.get("phase", "n/a"),
+                    "severity": sev,
+                    "deg_outside": deg,
+                })
+
+    # Sort top issues by severity and degree
+    top_issues.sort(key=lambda x: (3 if x["severity"] == "severe" else 2 if x["severity"] == "moderate" else 1, x["deg_outside"]), reverse=True)
+    top_issues = top_issues[:5]  # Top 5 issues
+
+    avg_stability = float(np.nanmean(stabilities)) if stabilities else 0.0
+
+    return {
+        "total_reps": total_reps,
+        "avg_confidence": avg_confidence,
+        "severity_counts": severity_counts,
+        "top_issues": top_issues,
+        "max_deviation": max_deviation,
+        "avg_stability": avg_stability,
+    }
+
+
+def render_executive_summary(analyses: List[Dict[str, Any]], run_id: str, created_at: str, exercise_label: str) -> None:
+    """Render executive summary card with key stats."""
+    summary = extract_analysis_summary(analyses)
+
+    st.markdown("### Executive Summary")
+
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+        st.metric("Run ID", run_id[:16] + "..." if len(run_id) > 16 else run_id)
+        if created_at:
+            st.caption(f"Created: {created_at}")
+
+    with col2:
+        st.metric("Avg Confidence", f"{summary['avg_confidence']:.2f}")
+        st.metric("Reference Stability", f"{summary['avg_stability']:.2f}")
+
+    with col3:
+        st.metric("Total Reps", summary["total_reps"])
+        st.metric("Max Deviation", f"{summary['max_deviation']:.1f}°")
+
+    with col4:
+        sev = summary["severity_counts"]
+        st.markdown("**Deviations**")
+        st.markdown(f"<span style='color: #dc2626; font-weight: 500;'>Severe: {sev['severe']}</span>", unsafe_allow_html=True)
+        st.markdown(f"<span style='color: #f59e0b; font-weight: 500;'>Moderate: {sev['moderate']}</span>", unsafe_allow_html=True)
+        st.markdown(f"<span style='color: #10b981; font-weight: 500;'>Mild: {sev['mild']}</span>", unsafe_allow_html=True)
+
+    if exercise_label:
+        st.caption(f"Exercise: {exercise_label}")
+
+
+def render_metrics_grid(analyses: List[Dict[str, Any]], coach_reps: List, user_reps: List) -> None:
+    """Render 4-column metrics grid."""
+    summary = extract_analysis_summary(analyses)
+
+    st.markdown("### Key Metrics")
+
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+        st.metric("Coach Reps", len(coach_reps) if coach_reps else 0)
+        st.metric("User Reps", len(user_reps) if user_reps else 0)
+
+    with col2:
+        st.metric("Avg Confidence", f"{summary['avg_confidence']:.2%}")
+        confidences = [a.get("confidence", 0.0) for a in analyses]
+        if confidences:
+            st.metric("Min Confidence", f"{min(confidences):.2%}")
+
+    with col3:
+        st.metric("Max Deviation", f"{summary['max_deviation']:.1f}°")
+        total_events = sum(len(a.get("events", [])) for a in analyses)
+        st.metric("Total Events", total_events)
+
+    with col4:
+        sev = summary["severity_counts"]
+        total_sev = sev["severe"] + sev["moderate"] + sev["mild"]
+        if total_sev > 0:
+            persistence_pct = (total_sev / (len(analyses) * 10)) * 100  # Rough estimate
+            st.metric("Persistence", f"{persistence_pct:.1f}%")
+        else:
+            st.metric("Persistence", "0%")
+        st.metric("Issues Found", total_sev)
+
+
+def render_analysis_table(analyses: List[Dict[str, Any]]) -> pd.DataFrame:
+    """Create formatted analysis table from analyses list."""
+    rows = []
+    for analysis in analyses:
+        events = analysis.get("events", [])
+        sev_counts = {"severe": 0, "moderate": 0, "mild": 0}
+        for event in events:
+            sev = event.get("severity", "none")
+            if sev in sev_counts:
+                sev_counts[sev] += 1
+
+        # Find top issue
+        top_issue = "None"
+        if events:
+            top_event = max(events, key=lambda e: float(e.get("deg_outside", 0.0)))
+            top_issue = f"{pretty_joint(top_event.get('joint', 'n/a'))} ({top_event.get('phase', 'n/a')})"
+
+        rows.append({
+            "Rep ID": analysis.get("rep_id", 0),
+            "Confidence": f"{analysis.get('confidence', 0.0):.2%}",
+            "Events": len(events),
+            "Severe": sev_counts["severe"],
+            "Moderate": sev_counts["moderate"],
+            "Mild": sev_counts["mild"],
+            "Top Issue": top_issue,
+        })
+
+    return pd.DataFrame(rows)
+
+
+def load_evolution_metrics(run_id: str, user_id: str, bucket: str, region: str, prefix: str, max_runs: int = 10) -> List[Dict[str, Any]]:
+    """Load recent runs from S3 and extract evolution metrics."""
+    if not s3_enabled():
+        return []
+
+    try:
+        manifest_objs = s3_list_manifests_cached(bucket, region, prefix, user_id, max_items=max_runs)
+
+        evolution_data = []
+        for obj in manifest_objs:
+            key = obj.get("key", "")
+            try:
+                manifest = s3_get_json_cached(bucket, region, key)
+                m_run_id = manifest.get("run_id", "")
+
+                # Skip current run
+                if m_run_id == run_id:
+                    continue
+
+                created_at = manifest.get("created_at_utc", "")
+                exercise_label = manifest.get("exercise_label", "")
+
+                # Try to load analysis
+                analysis_key = manifest.get("outputs", {}).get("analysis_s3_key")
+                if analysis_key:
+                    try:
+                        analysis = s3_get_json_cached(bucket, region, analysis_key)
+                        summary = extract_analysis_summary(analysis)
+
+                        evolution_data.append({
+                            "run_id": m_run_id,
+                            "created_at": created_at,
+                            "exercise_label": exercise_label,
+                            "avg_confidence": summary["avg_confidence"],
+                            "severity_counts": summary["severity_counts"],
+                            "max_deviation": summary["max_deviation"],
+                            "total_reps": summary["total_reps"],
+                        })
+                    except Exception:
+                        pass  # Skip if analysis can't be loaded
+            except Exception:
+                pass  # Skip if manifest can't be loaded
+
+        # Sort by created_at descending
+        evolution_data.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+        return evolution_data[:max_runs]
+    except Exception:
+        return []
+
+
+def render_evolution_section(run_id: str, user_id: str, bucket: str, region: str, prefix: str, current_summary: Dict[str, Any]) -> None:
+    """Render evolution tracking charts and comparison."""
+    evolution_data = load_evolution_metrics(run_id, user_id, bucket, region, prefix, max_runs=10)
+
+    if not evolution_data:
+        st.info("No previous runs found. Save more runs to see evolution tracking.")
+        return
+
+    st.markdown("### Evolution Tracking")
+    st.caption(f"Comparing with {len(evolution_data)} previous run(s)")
+
+    # Prepare data for charts
+    run_ids = [d["run_id"][:12] + "..." for d in evolution_data]
+    confidences = [d["avg_confidence"] for d in evolution_data]
+    max_deviations = [d["max_deviation"] for d in evolution_data]
+    severe_counts = [d["severity_counts"]["severe"] for d in evolution_data]
+    moderate_counts = [d["severity_counts"]["moderate"] for d in evolution_data]
+    mild_counts = [d["severity_counts"]["mild"] for d in evolution_data]
+
+    # Add current run
+    run_ids.insert(0, "Current")
+    confidences.insert(0, current_summary["avg_confidence"])
+    max_deviations.insert(0, current_summary["max_deviation"])
+    severe_counts.insert(0, current_summary["severity_counts"]["severe"])
+    moderate_counts.insert(0, current_summary["severity_counts"]["moderate"])
+    mild_counts.insert(0, current_summary["severity_counts"]["mild"])
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.markdown("#### Confidence Trend")
+        fig_conf = plt.figure(figsize=(8, 4))
+        plt.plot(range(len(run_ids)), confidences, marker="o", linewidth=2, markersize=8)
+        plt.xticks(range(len(run_ids)), run_ids, rotation=45, ha="right")
+        plt.ylabel("Confidence")
+        plt.title("Average Confidence Over Time")
+        plt.grid(True, alpha=0.3)
+        plt.tight_layout()
+        st.pyplot(fig_conf)
+
+    with col2:
+        st.markdown("#### Max Deviation Trend")
+        fig_dev = plt.figure(figsize=(8, 4))
+        plt.plot(range(len(run_ids)), max_deviations, marker="s", color="orange", linewidth=2, markersize=8)
+        plt.xticks(range(len(run_ids)), run_ids, rotation=45, ha="right")
+        plt.ylabel("Max Deviation (°)")
+        plt.title("Max Deviation Over Time")
+        plt.grid(True, alpha=0.3)
+        plt.tight_layout()
+        st.pyplot(fig_dev)
+
+    st.markdown("#### Severity Breakdown Over Time")
+    fig_sev = plt.figure(figsize=(10, 5))
+    x = range(len(run_ids))
+    width = 0.25
+    plt.bar([i - width for i in x], severe_counts, width, label="Severe", color="red", alpha=0.7)
+    plt.bar(x, moderate_counts, width, label="Moderate", color="orange", alpha=0.7)
+    plt.bar([i + width for i in x], mild_counts, width, label="Mild", color="yellow", alpha=0.7)
+    plt.xticks(x, run_ids, rotation=45, ha="right")
+    plt.ylabel("Count")
+    plt.title("Severity Distribution Across Runs")
+    plt.legend()
+    plt.grid(True, alpha=0.3, axis="y")
+    plt.tight_layout()
+    st.pyplot(fig_sev)
+
+    # Comparison with previous run
+    if len(evolution_data) > 0:
+        prev = evolution_data[0]
+        st.markdown("#### Comparison with Previous Run")
+        comp_col1, comp_col2, comp_col3 = st.columns(3)
+
+        with comp_col1:
+            conf_diff = current_summary["avg_confidence"] - prev["avg_confidence"]
+            st.metric("Confidence Change", f"{conf_diff:+.2%}", delta=f"{conf_diff:+.2%}")
+
+        with comp_col2:
+            dev_diff = current_summary["max_deviation"] - prev["max_deviation"]
+            st.metric("Max Deviation Change", f"{dev_diff:+.1f}°", delta=f"{dev_diff:+.1f}°")
+
+        with comp_col3:
+            sev_diff = current_summary["severity_counts"]["severe"] - prev["severity_counts"]["severe"]
+            st.metric("Severe Issues Change", f"{sev_diff:+d}", delta=f"{sev_diff:+d}")
+
+
 # ----------------------------- Cache expensive steps -----------------------------
 @st.cache_data(show_spinner=False)
 def cached_pose(video_path: str):
@@ -498,56 +1083,18 @@ def parse_manifest_row(manifest: Dict[str, Any], manifest_key: str, last_modifie
     }
 
 
-# ----------------------------- Sidebar controls -----------------------------
-st.sidebar.header("Controls")
-st.sidebar.caption("These persist across reruns.")
+# ----------------------------- Settings (Always Enabled) -----------------------------
+# Initialize default settings in session state if not present
+if "personality_style" not in st.session_state:
+    st.session_state["personality_style"] = "Supportive coach"
+if "personality_intensity" not in st.session_state:
+    st.session_state["personality_intensity"] = 1
 
-use_gemini = st.sidebar.checkbox("Use Gemini personality", key="use_gemini", value=False)
-personality = st.sidebar.selectbox(
-    "Personality style",
-    ["Supportive coach", "Slight roast", "MEGA ROAST"],
-    key="personality_style",
-    index=0,
-)
-intensity = st.sidebar.slider(
-    "Personality intensity",
-    min_value=0,
-    max_value=2,
-    value=1,
-    step=1,
-    help="0 = soft, 1 = normal, 2 = max intensity",
-    key="personality_intensity",
-)
+# Gemini is always enabled (if available)
+use_gemini = LLM_AVAILABLE  # Always use Gemini if available
 
-if use_gemini and not LLM_AVAILABLE:
-    st.sidebar.warning("Gemini helper not imported. Falling back to constrained cue.")
-    if _llm_err is not None:
-        st.sidebar.caption(f"Import error: {type(_llm_err).__name__}: {_llm_err}")
-
-# ---- S3 sidebar section ----
-st.sidebar.divider()
-st.sidebar.subheader("Progress tracking (S3)")
-
-cfg = s3_config()
-st.sidebar.caption(
-    f"Bucket: `{cfg['bucket'] or 'NOT SET'}`\n\n"
-    f"Region: `{cfg['region']}`\n\n"
-    f"Prefix: `{cfg['prefix']}`\n\n"
-    f"User ID: `{cfg['user_id']}`"
-)
-
-enable_s3 = st.sidebar.checkbox(
-    "Enable S3 saving for this session",
-    value=False,
-    key="enable_s3_saving",
-    help="Uploads videos + analysis.json + artifacts to S3 when you click 'Save this run to S3'.",
-)
-
-if enable_s3 and not s3_enabled():
-    if not BOTO3_AVAILABLE:
-        st.sidebar.error("boto3 not available. Install with: `pip install boto3`")
-    if not cfg["bucket"]:
-        st.sidebar.error("Set env var: ROASTCOACH_S3_BUCKET")
+# S3 is always enabled (if configured)
+enable_s3 = s3_enabled()  # Always use S3 if configured
 
 
 # ----------------------------- Tabs -----------------------------
@@ -599,34 +1146,80 @@ with tab_run:
         else:
             st.info("Upload a user attempt video to preview it here.")
 
-    # ----------------------------- Stage 1 -----------------------------
+    # ----------------------------- Confirm & Process -----------------------------
     st.divider()
-    st.subheader("Stage 1 — Compute pose + angles (expensive)")
 
-    compute_btn = st.button(
-        "Compute pose + angles",
+    confirm_btn = st.button(
+        "Confirm & Process",
         type="primary",
         disabled=not (coach_file and user_file),
+        width='stretch',
     )
 
-    if compute_btn:
+    # Initialize run when confirm is clicked
+    if confirm_btn:
         run_id, iso_ts = utc_run_id()
         st.session_state["run_id"] = run_id
         st.session_state["run_created_at"] = iso_ts
         st.session_state["saved_to_s3"] = False
         st.session_state["s3_last_error"] = None
         st.session_state["artifacts_local"] = {}
+        st.session_state["processing_complete"] = False
+        st.session_state["summary_generated"] = False
+        st.session_state["coach_video_s3_key"] = None
+        st.session_state["user_video_s3_key"] = None
 
+        # Save videos locally
         coach_path = save_upload(coach_file, DATA_RAW, prefix="coach", run_id=run_id)
         user_path = save_upload(user_file, DATA_RAW, prefix="user", run_id=run_id)
 
         st.session_state["coach_path"] = coach_path
         st.session_state["user_path"] = user_path
 
+        # Upload to S3 immediately if enabled
+        if enable_s3:
+            try:
+                cfg = s3_config()
+                coach_key = s3_key(run_id, coach_path.name, "raw/coach_video")
+                user_key = s3_key(run_id, user_path.name, "raw/user_video")
+
+                s3_put_file(
+                    coach_path,
+                    coach_key,
+                    content_type=guess_video_content_type(coach_path),
+                    metadata={"run_id": run_id, "role": "coach", "created_at": iso_ts},
+                )
+                s3_put_file(
+                    user_path,
+                    user_key,
+                    content_type=guess_video_content_type(user_path),
+                    metadata={"run_id": run_id, "role": "user", "created_at": iso_ts},
+                )
+
+                st.session_state["coach_video_s3_key"] = coach_key
+                st.session_state["user_video_s3_key"] = user_key
+                st.success("Videos uploaded to S3")
+            except Exception as e:
+                st.warning(f"Video upload to S3 failed: {e}")
+
+        # Reset stage flags to trigger processing
         st.session_state["stage1_done"] = False
         st.session_state["stage2_done"] = False
 
-        st.info("Running pose extraction + angle computation (cached by video path)...")
+    # Auto-process if videos are uploaded and stages not done
+    should_process = (
+        coach_file and user_file and
+        st.session_state.get("coach_path") and
+        st.session_state.get("user_path") and
+        not st.session_state.get("processing_complete", False)
+    )
+
+    if should_process and not st.session_state.get("stage1_done", False):
+        # ----------------------------- Stage 1: Auto-trigger -----------------------------
+        st.info("Processing Stage 1: Pose extraction + angle computation...")
+
+        coach_path = st.session_state["coach_path"]
+        user_path = st.session_state["user_path"]
 
         with st.spinner("Extracting pose (coach)..."):
             coach_frames = cached_pose(str(coach_path))
@@ -639,6 +1232,7 @@ with tab_run:
         df_coach = angles_to_df(coach_angles)
         df_user = angles_to_df(user_angles)
 
+        run_id = st.session_state["run_id"] or "run_unknown"
         coach_csv_run = DATA_PROCESSED / f"{run_id}_angles_coach.csv"
         user_csv_run = DATA_PROCESSED / f"{run_id}_angles_user.csv"
         coach_csv_latest = DATA_PROCESSED / "angles_coach.csv"
@@ -662,61 +1256,29 @@ with tab_run:
             }
         )
 
-        st.success("Stage 1 complete ✅ Pose + angles cached")
-        st.caption(f"Run ID: `{run_id}`  |  Created (UTC): `{iso_ts}`")
-        st.caption(f"Saved locally: `{coach_path.name}`, `{user_path.name}`")
+        st.success("Stage 1 complete: Pose + angles computed")
 
-    if not st.session_state["stage1_done"]:
-        st.info("Click **Compute pose + angles** once. After that, widgets won’t re-run expensive steps.")
-        st.stop()
+    # Continue to Stage 2 if Stage 1 is done
+    if st.session_state.get("stage1_done", False) and not st.session_state.get("stage2_done", False):
+        df_coach = st.session_state["df_coach"]
+        df_user = st.session_state["df_user"]
 
-    df_coach: pd.DataFrame = st.session_state["df_coach"]
-    df_user: pd.DataFrame = st.session_state["df_user"]
-    run_id = st.session_state["run_id"] or "run_unknown"
-    run_created_at = st.session_state["run_created_at"] or ""
+        angle_cols_coach = [c for c in df_coach.columns if c not in ("t", "conf")]
+        angle_cols_user = [c for c in df_user.columns if c not in ("t", "conf")]
+        shared_cols = [c for c in angle_cols_coach if c in angle_cols_user]
+        st.session_state["shared_cols"] = shared_cols
 
-    # ----------------------------- Sanity plot -----------------------------
-    st.subheader("Angle Sanity Plot")
-    angle_cols_coach = [c for c in df_coach.columns if c not in ("t", "conf")]
-    angle_cols_user = [c for c in df_user.columns if c not in ("t", "conf")]
-    shared_cols = [c for c in angle_cols_coach if c in angle_cols_user]
-    st.session_state["shared_cols"] = shared_cols
+        if not shared_cols:
+            st.error("No shared angle columns found. Pose landmarks may be failing.")
+            st.stop()
 
-    if not shared_cols:
-        st.warning("No shared angle columns found. Pose landmarks may be failing.")
-        st.write("Try a clearer video (full body visible, good lighting, minimal occlusion).")
-        st.stop()
+        # ----------------------------- Stage 2: Auto-trigger -----------------------------
+        st.info("Processing Stage 2: Rep segmentation + normalization...")
 
-    default_sanity = "left_knee_flex" if "left_knee_flex" in shared_cols else shared_cols[0]
-    sanity_joint = st.selectbox("Sanity plot joint", shared_cols, index=shared_cols.index(default_sanity), key="sanity_joint")
-
-    fig = plt.figure()
-    plt.plot(df_coach["t"], df_coach[sanity_joint], label="coach")
-    plt.plot(df_user["t"], df_user[sanity_joint], label="user")
-    plt.xlabel("time (s)")
-    plt.ylabel("degrees")
-    plt.title(f"{sanity_joint} over time")
-    plt.legend()
-    st.pyplot(fig)
-
-    # ----------------------------- Stage 2 -----------------------------
-    st.divider()
-    st.subheader("Stage 2 — Rep segmentation + reference (medium)")
-
-    cA, cB, cC, cD = st.columns([1, 1, 1, 2])
-    with cA:
-        min_q = st.slider("Min rep quality", 0.0, 1.0, 0.35, 0.05, key="min_q")
-    with cB:
-        drop_first = st.checkbox("Drop first rep (setup)", value=True, key="drop_first")
-    with cC:
-        N = st.slider("Normalization length (N)", 50, 200, int(st.session_state.get("N", 100)), 10, key="N_norm")
-    with cD:
-        st.caption("After changing these, click **Build reference** again.")
-
-    build_btn = st.button("Build reference (segmentation + normalization)")
-
-    if build_btn:
-        st.session_state["stage2_done"] = False
+        # Use default settings for auto-processing
+        min_q = st.session_state.get("min_q", 0.35)
+        drop_first = st.session_state.get("drop_first", True)
+        N = int(st.session_state.get("N", 100))
 
         coach_driver = choose_driver_column(df_coach)
         user_driver = coach_driver
@@ -728,7 +1290,7 @@ with tab_run:
         user_reps = filter_reps(user_reps_raw, min_quality=min_q, drop_first=drop_first)
 
         if not (coach_reps and user_reps):
-            st.warning("Not enough reps kept after filtering. Lower min quality or uncheck 'drop first rep'.")
+            st.error("Not enough reps kept after filtering. Try adjusting video quality or settings.")
             st.stop()
 
         angle_cols = shared_cols
@@ -757,282 +1319,387 @@ with tab_run:
             }
         )
 
-        st.success("Stage 2 complete ✅ Reference cached")
+        st.success("Stage 2 complete: Reference envelope built")
 
-    if not st.session_state["stage2_done"]:
-        st.info("Click **Build reference** to enable envelope + deviation + coaching.")
-        st.stop()
+    # Continue to Stage 3 if Stage 2 is done
+    if st.session_state.get("stage2_done", False) and not st.session_state.get("processing_complete", False):
+        # ----------------------------- Stage 3: Auto-trigger -----------------------------
+        st.info("Processing Stage 3: Envelope + deviation detection + coaching tip...")
 
-    coach_driver: str = st.session_state["coach_driver"]
-    coach_reps = st.session_state["coach_reps"]
-    user_reps = st.session_state["user_reps"]
-    angle_cols = st.session_state["angle_cols"]
-    tt = st.session_state["tt"]
-    coach_mean = st.session_state["coach_mean"]
-    coach_std = st.session_state["coach_std"]
-    coach_stack = st.session_state["coach_stack"]
-    user_mean = st.session_state["user_mean"]
-    user_std = st.session_state["user_std"]
-    N = int(st.session_state["N"])
+        coach_driver = st.session_state["coach_driver"]
+        coach_reps = st.session_state["coach_reps"]
+        user_reps = st.session_state["user_reps"]
+        angle_cols = st.session_state["angle_cols"]
+        tt = st.session_state["tt"]
+        coach_mean = st.session_state["coach_mean"]
+        coach_std = st.session_state["coach_std"]
+        coach_stack = st.session_state["coach_stack"]
+        user_mean = st.session_state["user_mean"]
+        N = int(st.session_state["N"])
+        df_user = st.session_state["df_user"]
 
-    st.write(f"Coach driver: `{coach_driver}` (forced for user)")
-    st.caption(f"Coach {conf_summary(df_coach)} | User {conf_summary(df_user)}")
-    st.write(f"Kept reps — coach: **{len(coach_reps)}** | user: **{len(user_reps)}**")
+        # Use default settings
+        env_method = st.session_state.get("env_method", "std*k")
+        k = float(st.session_state.get("k_std", 1.5))
+        use_floor = st.session_state.get("use_floor", True)
+        knee_floor = float(st.session_state.get("knee_floor", 5.0))
+        trunk_floor = float(st.session_state.get("trunk_floor", 3.0))
+        mild = float(st.session_state.get("mild", 5.0))
+        moderate = float(st.session_state.get("moderate", 12.0))
+        severe = float(st.session_state.get("severe", 20.0))
+        persistent_thresh = float(st.session_state.get("persist_pct", 20.0)) / 100.0
+        bottom_window = float(st.session_state.get("bottom_window", 8.0)) / 100.0
+        use_robust = st.session_state.get("use_robust", True)
+        robust_q = float(st.session_state.get("robust_q", 95.0))
+        min_stability = float(st.session_state.get("min_stability", 0.6))
+        min_conf_required = float(st.session_state.get("min_conf_required", 0.6))
+        allow_quick = st.session_state.get("allow_quick", True)
 
-    default_idx = angle_cols.index(coach_driver) if coach_driver in angle_cols else 0
-    plot_joint = st.selectbox("Plot joint (normalized)", options=angle_cols, index=default_idx, key="plot_joint_norm")
-    j = angle_cols.index(plot_joint)
-
-    fig3 = plt.figure()
-    plt.plot(tt, coach_mean[:, j], label="coach mean")
-    plt.plot(tt, user_mean[:, j], label="user mean")
-    plt.fill_between(tt, user_mean[:, j] - user_std[:, j], user_mean[:, j] + user_std[:, j], alpha=0.2)
-    plt.xlabel("normalized time (0→1)")
-    plt.ylabel("degrees")
-    plt.title(f"Mean normalized rep (±1 std) — {plot_joint}")
-    plt.legend()
-    st.pyplot(fig3)
-
-    # ----------------------------- Stage 3 (live) -----------------------------
-    st.divider()
-    st.subheader("Stage 3 — Envelope + deviation + coaching (fast, live)")
-
-    env_method = st.selectbox("Envelope method", ["std*k", "percentile (10–90)"], index=0, key="env_method")
-    k = st.slider("k (std multiplier)", 0.5, 3.0, 1.5, 0.1, key="k_std")
-
-    use_floor = st.checkbox("Use minimum envelope width floor (recommended)", value=True, key="use_floor")
-    knee_floor = st.slider("Min half-width for knee/elbow (deg)", 1.0, 15.0, 5.0, 0.5, key="knee_floor")
-    trunk_floor = st.slider("Min half-width for trunk_incline (deg)", 1.0, 10.0, 3.0, 0.5, key="trunk_floor")
-
-    if env_method == "std*k":
-        tol = coach_std * float(k)
-        ref_lo = coach_mean - tol
-        ref_hi = coach_mean + tol
-        stability = float(1.0 / (1.0 + np.nanmean(coach_std)))
-    else:
-        ref_lo = np.nanpercentile(coach_stack, 10, axis=0)
-        ref_hi = np.nanpercentile(coach_stack, 90, axis=0)
-        band_width = float(np.nanmean(ref_hi - ref_lo))
-        stability = float(1.0 / (1.0 + band_width))
-
-    if use_floor:
-        ref_lo, ref_hi = apply_envelope_floor(angle_cols, coach_mean, ref_lo, ref_hi, knee_floor, trunk_floor)
-
-    st.write(f"Reference stability (proxy): **{stability:.2f}**")
-    min_stability = st.slider("Warn if stability < ", 0.1, 1.0, 0.6, 0.05, key="min_stability")
-    if stability < min_stability:
-        st.warning("Coach reference is unstable (few reps or variable form). You can still coach in Quick Mode.")
-
-    fig_env = plt.figure()
-    plt.plot(tt, coach_mean[:, j], label="coach mean")
-    plt.fill_between(tt, ref_lo[:, j], ref_hi[:, j], alpha=0.18, label="coach envelope")
-    plt.plot(tt, user_mean[:, j], label="user mean")
-    plt.xlabel("normalized time (0→1)")
-    plt.ylabel("degrees")
-    plt.title(f"Coach envelope vs user mean — {plot_joint}")
-    plt.legend()
-    st.pyplot(fig_env)
-
-    env_path_run = DATA_PROCESSED / f"{run_id}_reference_envelope_coach.npz"
-    env_path_latest = DATA_PROCESSED / "reference_envelope_coach.npz"
-    np.savez(
-        env_path_run,
-        angle_cols=np.array(angle_cols, dtype=object),
-        coach_mean=coach_mean,
-        ref_lo=ref_lo,
-        ref_hi=ref_hi,
-        stability=np.array([stability]),
-        N=np.array([N]),
-    )
-    np.savez(
-        env_path_latest,
-        angle_cols=np.array(angle_cols, dtype=object),
-        coach_mean=coach_mean,
-        ref_lo=ref_lo,
-        ref_hi=ref_hi,
-        stability=np.array([stability]),
-        N=np.array([N]),
-    )
-    st.session_state["artifacts_local"]["envelope_npz"] = str(env_path_run)
-    st.caption(f"Saved envelope: `{env_path_run.name}`")
-
-    # ----------------------------- Deviation detection (live) -----------------------------
-    st.subheader("Deviation Detection (user reps vs coach envelope)")
-
-    mild = st.slider("Mild threshold (deg outside)", 1.0, 20.0, 5.0, 0.5, key="mild")
-    moderate = st.slider("Moderate threshold (deg outside)", 5.0, 40.0, 12.0, 0.5, key="moderate")
-    severe = st.slider("Severe threshold (deg outside)", 10.0, 60.0, 20.0, 0.5, key="severe")
-    persistent_thresh = st.slider("Persistent if outside > (%)", 0, 100, 20, 5, key="persist_pct") / 100.0
-    bottom_window = st.slider("Bottom window size (normalized %)", 2, 20, 8, 1, key="bottom_window") / 100.0
-
-    use_robust = st.checkbox("Use robust max (percentile) for deg_outside", value=True, key="use_robust")
-    robust_q = st.slider("Robust percentile (q)", 80, 100, 95, 1, key="robust_q")
-
-    driver_idx = angle_cols.index(coach_driver) if coach_driver in angle_cols else 0
-
-    analyses: List[Dict[str, Any]] = []
-    for ridx, r in enumerate(user_reps):
-        user_mat = resample_rep_angles(df_user, r, angle_cols, N=int(N))  # (N,J)
-        idx_bottom = int(np.nanargmin(user_mat[:, driver_idx]))
-
-        below = ref_lo - user_mat
-        above = user_mat - ref_hi
-        over = np.maximum(0.0, np.maximum(below, above))
-
-        if use_robust:
-            max_over = robust_joint_max(over, float(robust_q))
+        # Build envelope
+        if env_method == "std*k":
+            tol = coach_std * k
+            ref_lo = coach_mean - tol
+            ref_hi = coach_mean + tol
+            stability = float(1.0 / (1.0 + np.nanmean(coach_std)))
         else:
-            max_over = np.nanmax(over, axis=0)
+            ref_lo = np.nanpercentile(coach_stack, 10, axis=0)
+            ref_hi = np.nanpercentile(coach_stack, 90, axis=0)
+            band_width = float(np.nanmean(ref_hi - ref_lo))
+            stability = float(1.0 / (1.0 + band_width))
 
-        persist = np.nanmean(over > 0, axis=0)
+        if use_floor:
+            ref_lo, ref_hi = apply_envelope_floor(angle_cols, coach_mean, ref_lo, ref_hi, knee_floor, trunk_floor)
 
-        focus_cols = focus_joints_from_driver(coach_driver, angle_cols)
-        focus_idx = [angle_cols.index(c) for c in focus_cols]
-        ranked_focus = sorted(focus_idx, key=lambda jj: (float(max_over[jj]), float(persist[jj])), reverse=True)
-        top_idx = ranked_focus[:3]
+        # Deviation detection
+        driver_idx = angle_cols.index(coach_driver) if coach_driver in angle_cols else 0
 
-        events = []
-        for jj in top_idx:
-            deg = float(max_over[jj]) if np.isfinite(max_over[jj]) else 0.0
-            sev_label = severity_from_deg(deg, mild=mild, moderate=moderate, severe=severe)
-            if sev_label == "none":
-                continue
+        analyses: List[Dict[str, Any]] = []
+        for ridx, r in enumerate(user_reps):
+            user_mat = resample_rep_angles(df_user, r, angle_cols, N=int(N))
+            idx_bottom = int(np.nanargmin(user_mat[:, driver_idx]))
 
-            idx_peak = int(np.nanargmax(over[:, jj]))
-            phase = phase_from_t(idx_peak, idx_bottom, int(N), bottom_window_frac=float(bottom_window))
+            below = ref_lo - user_mat
+            above = user_mat - ref_hi
+            over = np.maximum(0.0, np.maximum(below, above))
 
-            diff_val = float(user_mat[idx_peak, jj] - coach_mean[idx_peak, jj])
-            direction = "above_reference" if diff_val > 0 else "below_reference"
+            if use_robust:
+                max_over = robust_joint_max(over, float(robust_q))
+            else:
+                max_over = np.nanmax(over, axis=0)
 
-            events.append(
+            persist = np.nanmean(over > 0, axis=0)
+
+            focus_cols = focus_joints_from_driver(coach_driver, angle_cols)
+            focus_idx = [angle_cols.index(c) for c in focus_cols]
+            ranked_focus = sorted(focus_idx, key=lambda jj: (float(max_over[jj]), float(persist[jj])), reverse=True)
+            top_idx = ranked_focus[:3]
+
+            events = []
+            for jj in top_idx:
+                deg = float(max_over[jj]) if np.isfinite(max_over[jj]) else 0.0
+                sev_label = severity_from_deg(deg, mild=mild, moderate=moderate, severe=severe)
+                if sev_label == "none":
+                    continue
+
+                idx_peak = int(np.nanargmax(over[:, jj]))
+                phase = phase_from_t(idx_peak, idx_bottom, int(N), bottom_window_frac=float(bottom_window))
+
+                diff_val = float(user_mat[idx_peak, jj] - coach_mean[idx_peak, jj])
+                direction = "above_reference" if diff_val > 0 else "below_reference"
+
+                events.append(
+                    {
+                        "joint": angle_cols[jj],
+                        "phase": phase,
+                        "direction": direction,
+                        "deg_outside": deg,
+                        "persistence": float(persist[jj]),
+                        "severity": sev_label,
+                        "persistence_label": "persistent" if float(persist[jj]) >= persistent_thresh else "brief",
+                    }
+                )
+
+            pose_conf = float(np.nanmean(df_user["conf"])) if "conf" in df_user.columns else 1.0
+            rep_conf = float(np.clip(r.quality, 0.0, 1.0))
+            confidence = float(0.5 * pose_conf + 0.5 * rep_conf)
+
+            analyses.append(
                 {
-                    "joint": angle_cols[jj],
-                    "phase": phase,
-                    "direction": direction,
-                    "deg_outside": deg,
-                    "persistence": float(persist[jj]),
-                    "severity": sev_label,
-                    "persistence_label": "persistent" if float(persist[jj]) >= persistent_thresh else "brief",
+                    "rep_id": ridx,
+                    "confidence": confidence,
+                    "reference_stability": stability,
+                    "events": events,
                 }
             )
 
-        pose_conf = float(np.nanmean(df_user["conf"])) if "conf" in df_user.columns else 1.0
-        rep_conf = float(np.clip(r.quality, 0.0, 1.0))
-        confidence = float(0.5 * pose_conf + 0.5 * rep_conf)
-
-        analyses.append(
-            {
-                "rep_id": ridx,
-                "confidence": confidence,
-                "reference_stability": stability,
-                "events": events,
-            }
+        # Generate coaching tip
+        chosen = analyses[0] if analyses else {}
+        base_tip = make_tip_from_events(
+            chosen.get("events", []),
+            stability=float(chosen.get("reference_stability", stability)),
+            confidence=float(chosen.get("confidence", 0.5)),
+            min_stability=float(min_stability),
+            min_conf=float(min_conf_required),
+            allow_quick_mode=bool(allow_quick),
         )
 
-    st.write(f"Analyzed **{len(analyses)}** user reps.")
-    with st.expander("Preview analysis JSON (first 2 reps)"):
-        st.json(analyses[:2])
-
-    analysis_path_run = DATA_PROCESSED / f"{run_id}_analysis.json"
-    analysis_path_latest = DATA_PROCESSED / "analysis.json"
-    analysis_path_run.write_text(json.dumps(analyses, indent=2))
-    analysis_path_latest.write_text(json.dumps(analyses, indent=2))
-    st.session_state["latest_analysis"] = analyses
-    st.session_state["artifacts_local"]["analysis_json"] = str(analysis_path_run)
-    st.caption(f"Saved analysis: `{analysis_path_run.name}`")
-
-    # ----------------------------- Coaching cue -----------------------------
-    st.divider()
-    st.subheader("Coaching cue")
-
-    min_conf_required = st.slider("Min confidence required", 0.0, 1.0, 0.6, 0.05, key="min_conf_required")
-    rep_pick = st.selectbox("Choose rep to coach", options=list(range(len(analyses))), index=0, key="rep_pick")
-    allow_quick = st.checkbox("Allow Quick Mode when stability is low", value=True, key="allow_quick")
-
-    chosen = analyses[rep_pick]
-
-    base_tip = make_tip_from_events(
-        chosen["events"],
-        stability=float(chosen["reference_stability"]),
-        confidence=float(chosen["confidence"]),
-        min_stability=float(min_stability),
-        min_conf=float(min_conf_required),
-        allow_quick_mode=bool(allow_quick),
-    )
-
-    final_tip = base_tip
-
-    if use_gemini and LLM_AVAILABLE:
-        try:
-            final_tip = generate_personality_tip(
-                analysis=chosen,
-                base_tip=base_tip,
-                style=personality,
-                intensity=int(intensity),
-            )
-            if not isinstance(final_tip, dict) or "one_sentence_tip" not in final_tip:
+        final_tip = base_tip
+        if use_gemini:
+            try:
+                final_tip = generate_personality_tip(
+                    analysis=chosen,
+                    base_tip=base_tip,
+                    style=st.session_state.get("personality_style", "Supportive coach"),
+                    intensity=int(st.session_state.get("personality_intensity", 1)),
+                )
+                if not isinstance(final_tip, dict) or "one_sentence_tip" not in final_tip:
+                    final_tip = base_tip
+            except Exception:
                 final_tip = base_tip
-        except Exception as e:
-            st.warning("Gemini personality failed; showing constrained cue.")
-            st.caption(f"{type(e).__name__}: {e}")
-            final_tip = base_tip
 
-    st.session_state["latest_tip"] = final_tip
+        # Save analysis and envelope
+        run_id = st.session_state["run_id"] or "run_unknown"
+        analysis_path_run = DATA_PROCESSED / f"{run_id}_analysis.json"
+        analysis_path_latest = DATA_PROCESSED / "analysis.json"
+        analysis_path_run.write_text(json.dumps(analyses, indent=2))
+        analysis_path_latest.write_text(json.dumps(analyses, indent=2))
 
-    st.success(final_tip["one_sentence_tip"])
-    with st.expander("Tip JSON"):
-        st.json(final_tip)
+        env_path_run = DATA_PROCESSED / f"{run_id}_reference_envelope_coach.npz"
+        env_path_latest = DATA_PROCESSED / "reference_envelope_coach.npz"
+        np.savez(
+            env_path_run,
+            angle_cols=np.array(angle_cols, dtype=object),
+            coach_mean=coach_mean,
+            ref_lo=ref_lo,
+            ref_hi=ref_hi,
+            stability=np.array([stability]),
+            N=np.array([N]),
+        )
+        np.savez(
+            env_path_latest,
+            angle_cols=np.array(angle_cols, dtype=object),
+            coach_mean=coach_mean,
+            ref_lo=ref_lo,
+            ref_hi=ref_hi,
+            stability=np.array([stability]),
+            N=np.array([N]),
+        )
 
-    # ----------------------------- S3 Save (button) -----------------------------
-    st.divider()
-    st.subheader("Save this run (videos + analysis) to S3")
+        # Update session state
+        st.session_state["latest_analysis"] = analyses
+        st.session_state["latest_tip"] = final_tip
+        st.session_state["artifacts_local"]["analysis_json"] = str(analysis_path_run)
+        st.session_state["artifacts_local"]["envelope_npz"] = str(env_path_run)
+        st.session_state["ref_lo"] = ref_lo
+        st.session_state["ref_hi"] = ref_hi
+        st.session_state["processing_complete"] = True
 
-    cfg = s3_config()
+        st.success("Stage 3 complete: Analysis + coaching tip generated")
 
-    if not enable_s3:
-        st.info("Enable S3 saving from the sidebar to upload this run for progress tracking.")
-    else:
-        if not s3_enabled():
-            st.error("S3 is not ready. Make sure boto3 is installed and ROASTCOACH_S3_BUCKET is set.")
+    # Show summary dashboard if processing is complete
+    if st.session_state.get("processing_complete", False) and not st.session_state.get("summary_generated", False):
+        st.session_state["summary_generated"] = True
+        st.rerun()  # Trigger rerun to show dashboard
+
+    if st.session_state.get("processing_complete", False):
+        # Show summary dashboard
+        st.divider()
+        st.markdown("# Summary Dashboard")
+
+        analyses = st.session_state.get("latest_analysis", [])
+        run_id = st.session_state.get("run_id", "unknown")
+        run_created_at = st.session_state.get("run_created_at", "")
+        exercise_label = st.session_state.get("exercise_label", "")
+        final_tip = st.session_state.get("latest_tip", {})
+
+        # Executive Summary
+        render_executive_summary(analyses, run_id, run_created_at, exercise_label)
+
+        st.divider()
+
+        # Key Metrics Grid
+        coach_reps = st.session_state.get("coach_reps", [])
+        user_reps = st.session_state.get("user_reps", [])
+        render_metrics_grid(analyses, coach_reps, user_reps)
+
+        st.divider()
+
+        # Gemini Feedback (prominent)
+        st.markdown("### Coaching Feedback")
+        if final_tip.get("one_sentence_tip"):
+            tip_style = st.session_state.get("personality_style", "Supportive coach") if use_gemini else "Supportive coach"
+
+            # Color code based on style
+            if tip_style == "MEGA ROAST":
+                st.error(final_tip['one_sentence_tip'])
+            elif tip_style == "Slight roast":
+                st.warning(final_tip['one_sentence_tip'])
+            else:
+                st.success(final_tip['one_sentence_tip'])
+
+            with st.expander("View tip details"):
+                st.json(final_tip)
         else:
-            exercise_label = st.text_input(
+            st.info("No coaching tip available.")
+
+        st.divider()
+
+        # Graphs and Analysis Table
+        col_graphs, col_table = st.columns([2, 1])
+
+        with col_graphs:
+            st.markdown("### Visualizations")
+
+            df_coach = st.session_state["df_coach"]
+            df_user = st.session_state["df_user"]
+            angle_cols = st.session_state.get("shared_cols", [])
+            default_sanity = "left_knee_flex" if "left_knee_flex" in angle_cols else (angle_cols[0] if angle_cols else None)
+
+            if default_sanity:
+                # Sanity Plot
+                st.markdown("#### Angle Over Time")
+                fig = plt.figure(figsize=(10, 4))
+                plt.plot(df_coach["t"], df_coach[default_sanity], label="coach", linewidth=2)
+                plt.plot(df_user["t"], df_user[default_sanity], label="user", linewidth=2)
+                plt.xlabel("time (s)")
+                plt.ylabel("degrees")
+                plt.title(f"{default_sanity} over time")
+                plt.legend()
+                plt.grid(True, alpha=0.3)
+                plt.tight_layout()
+                st.pyplot(fig, width='stretch')
+
+            # Normalized Rep Plot
+            if st.session_state.get("stage2_done", False):
+                coach_mean = st.session_state["coach_mean"]
+                user_mean = st.session_state["user_mean"]
+                user_std = st.session_state["user_std"]
+                tt = st.session_state["tt"]
+                angle_cols = st.session_state["angle_cols"]
+                coach_driver = st.session_state.get("coach_driver", "")
+
+                if coach_driver in angle_cols:
+                    j = angle_cols.index(coach_driver)
+                    st.markdown("#### Normalized Rep Comparison")
+                    fig3 = plt.figure(figsize=(10, 4))
+                    plt.plot(tt, coach_mean[:, j], label="coach mean", linewidth=2)
+                    plt.plot(tt, user_mean[:, j], label="user mean", linewidth=2)
+                    plt.fill_between(tt, user_mean[:, j] - user_std[:, j], user_mean[:, j] + user_std[:, j], alpha=0.2)
+                    plt.xlabel("normalized time (0→1)")
+                    plt.ylabel("degrees")
+                    plt.title(f"Mean normalized rep (±1 std) — {coach_driver}")
+                    plt.legend()
+                    plt.grid(True, alpha=0.3)
+                    plt.tight_layout()
+                    st.pyplot(fig3, width='stretch')
+
+                # Envelope Plot
+                ref_lo = st.session_state.get("ref_lo")
+                ref_hi = st.session_state.get("ref_hi")
+                if ref_lo is not None and ref_hi is not None and coach_driver in angle_cols:
+                    j = angle_cols.index(coach_driver)
+                    st.markdown("#### Coach Envelope vs User")
+                    fig_env = plt.figure(figsize=(10, 4))
+                    plt.plot(tt, coach_mean[:, j], label="coach mean", linewidth=2)
+                    plt.fill_between(tt, ref_lo[:, j], ref_hi[:, j], alpha=0.18, label="coach envelope")
+                    plt.plot(tt, user_mean[:, j], label="user mean", linewidth=2)
+                    plt.xlabel("normalized time (0→1)")
+                    plt.ylabel("degrees")
+                    plt.title(f"Coach envelope vs user mean — {coach_driver}")
+                    plt.legend()
+                    plt.grid(True, alpha=0.3)
+                    plt.tight_layout()
+                    st.pyplot(fig_env, width='stretch')
+
+        with col_table:
+            st.markdown("### Analysis Summary")
+            df_analysis = render_analysis_table(analyses)
+            st.dataframe(df_analysis, width='stretch', hide_index=True)
+
+            # Rep selector for details
+            if len(analyses) > 0:
+                rep_pick = st.selectbox("View rep details", options=list(range(len(analyses))), index=0, key="summary_rep_pick")
+                chosen_rep = analyses[rep_pick]
+                with st.expander("Rep events"):
+                    st.json(chosen_rep.get("events", []))
+
+        st.divider()
+
+        # Evolution Tracking
+        if enable_s3:
+            cfg = s3_config()
+            current_summary = extract_analysis_summary(analyses)
+            render_evolution_section(run_id, cfg["user_id"], cfg["bucket"], cfg["region"], cfg["prefix"], current_summary)
+
+        st.divider()
+
+        # JSON Summaries (expandable)
+        st.markdown("### Detailed Data")
+
+        with st.expander("Analysis JSON (first 3 reps)"):
+            st.json(analyses[:3] if len(analyses) >= 3 else analyses)
+
+        with st.expander("Manifest Summary"):
+            manifest_summary = {
+                "run_id": run_id,
+                "created_at": run_created_at,
+                "exercise_label": exercise_label,
+                "coach_driver": st.session_state.get("coach_driver"),
+                "coach_reps": len(coach_reps),
+                "user_reps": len(user_reps),
+                "settings": {
+                    "min_q": st.session_state.get("min_q", 0.35),
+                    "N": st.session_state.get("N", 100),
+                    "env_method": st.session_state.get("env_method", "std*k"),
+                }
+            }
+            st.json(manifest_summary)
+
+        # Auto-save to S3 if enabled
+        if enable_s3 and not st.session_state.get("saved_to_s3", False):
+            st.divider()
+            st.markdown("### Save to S3")
+
+            exercise_label_input = st.text_input(
                 "Exercise label (optional)",
                 value=st.session_state.get("exercise_label", ""),
-                key="exercise_label",
+                key="summary_exercise_label",
                 help="Example: squat, pushup, lunge, deadlift. Stored in manifest.json.",
             )
+            st.session_state["exercise_label"] = exercise_label_input
 
-            base_prefix = f"{cfg['prefix']}/{cfg['user_id']}/{run_id}/"
-            st.caption(f"S3 destination prefix: `{base_prefix}`")
-
-            save_btn = st.button("Save this run to S3", type="primary", disabled=st.session_state.get("saved_to_s3", False))
-
-            if st.session_state.get("saved_to_s3", False):
-                st.success("This run is already saved to S3 ✅ (upload new videos to start a new run).")
-
-            if save_btn:
+            if st.button("Save this run to S3", type="primary", key="auto_save_s3"):
                 st.session_state["s3_last_error"] = None
 
                 try:
+                    cfg = s3_config()
                     coach_path = Path(st.session_state["coach_path"])
                     user_path = Path(st.session_state["user_path"])
 
-                    coach_key = s3_key(run_id, coach_path.name, "raw/coach_video")
-                    user_key = s3_key(run_id, user_path.name, "raw/user_video")
+                    # Videos may already be uploaded, use stored keys or upload
+                    coach_key = st.session_state.get("coach_video_s3_key") or s3_key(run_id, coach_path.name, "raw/coach_video")
+                    user_key = st.session_state.get("user_video_s3_key") or s3_key(run_id, user_path.name, "raw/user_video")
 
-                    s3_put_file(
-                        coach_path,
-                        coach_key,
-                        content_type=guess_video_content_type(coach_path),
-                        metadata={"run_id": run_id, "role": "coach", "created_at": run_created_at},
-                    )
-                    s3_put_file(
-                        user_path,
-                        user_key,
-                        content_type=guess_video_content_type(user_path),
-                        metadata={"run_id": run_id, "role": "user", "created_at": run_created_at},
-                    )
+                    # Upload videos if not already uploaded
+                    if not st.session_state.get("coach_video_s3_key"):
+                        s3_put_file(
+                            coach_path,
+                            coach_key,
+                            content_type=guess_video_content_type(coach_path),
+                            metadata={"run_id": run_id, "role": "coach", "created_at": run_created_at},
+                        )
+                        st.session_state["coach_video_s3_key"] = coach_key
 
+                    if not st.session_state.get("user_video_s3_key"):
+                        s3_put_file(
+                            user_path,
+                            user_key,
+                            content_type=guess_video_content_type(user_path),
+                            metadata={"run_id": run_id, "role": "user", "created_at": run_created_at},
+                        )
+                        st.session_state["user_video_s3_key"] = user_key
+
+                    # Upload artifacts
                     artifacts = st.session_state.get("artifacts_local", {})
 
                     if "angles_coach_csv" in artifacts:
@@ -1050,11 +1717,12 @@ with tab_run:
                         p = Path(artifacts["analysis_json"])
                         s3_put_file(p, s3_key(run_id, p.name, "processed/analysis"), content_type="application/json")
 
+                    # Create manifest
                     manifest = {
                         "run_id": run_id,
                         "created_at_utc": run_created_at,
                         "user_id": cfg["user_id"],
-                        "exercise_label": exercise_label.strip() or None,
+                        "exercise_label": exercise_label_input.strip() or None,
                         "inputs": {
                             "coach_video_s3_key": coach_key,
                             "user_video_s3_key": user_key,
@@ -1064,26 +1732,26 @@ with tab_run:
                         "settings": {
                             "min_q": float(st.session_state.get("min_q", 0.35)),
                             "drop_first": bool(st.session_state.get("drop_first", True)),
-                            "N": int(st.session_state.get("N", N)),
-                            "env_method": str(st.session_state.get("env_method", env_method)),
-                            "k_std": float(st.session_state.get("k_std", k)),
-                            "use_floor": bool(st.session_state.get("use_floor", use_floor)),
-                            "knee_floor": float(st.session_state.get("knee_floor", knee_floor)),
-                            "trunk_floor": float(st.session_state.get("trunk_floor", trunk_floor)),
-                            "mild": float(st.session_state.get("mild", mild)),
-                            "moderate": float(st.session_state.get("moderate", moderate)),
-                            "severe": float(st.session_state.get("severe", severe)),
-                            "persist_pct": float(st.session_state.get("persist_pct", persistent_thresh * 100.0)),
-                            "bottom_window": float(st.session_state.get("bottom_window", bottom_window * 100.0)),
-                            "use_robust": bool(st.session_state.get("use_robust", use_robust)),
-                            "robust_q": int(st.session_state.get("robust_q", robust_q)),
-                            "min_stability": float(st.session_state.get("min_stability", min_stability)),
-                            "min_conf_required": float(st.session_state.get("min_conf_required", min_conf_required)),
-                            "allow_quick": bool(st.session_state.get("allow_quick", allow_quick)),
+                            "N": int(st.session_state.get("N", 100)),
+                            "env_method": str(st.session_state.get("env_method", "std*k")),
+                            "k_std": float(st.session_state.get("k_std", 1.5)),
+                            "use_floor": bool(st.session_state.get("use_floor", True)),
+                            "knee_floor": float(st.session_state.get("knee_floor", 5.0)),
+                            "trunk_floor": float(st.session_state.get("trunk_floor", 3.0)),
+                            "mild": float(st.session_state.get("mild", 5.0)),
+                            "moderate": float(st.session_state.get("moderate", 12.0)),
+                            "severe": float(st.session_state.get("severe", 20.0)),
+                            "persist_pct": float(st.session_state.get("persist_pct", 20.0)),
+                            "bottom_window": float(st.session_state.get("bottom_window", 8.0)),
+                            "use_robust": bool(st.session_state.get("use_robust", True)),
+                            "robust_q": int(st.session_state.get("robust_q", 95)),
+                            "min_stability": float(st.session_state.get("min_stability", 0.6)),
+                            "min_conf_required": float(st.session_state.get("min_conf_required", 0.6)),
+                            "allow_quick": bool(st.session_state.get("allow_quick", True)),
                             "gemini": {
-                                "enabled": bool(st.session_state.get("use_gemini", use_gemini)),
-                                "style": str(st.session_state.get("personality_style", personality)),
-                                "intensity": int(st.session_state.get("personality_intensity", intensity)),
+                                "enabled": bool(st.session_state.get("use_gemini", False)),
+                                "style": str(st.session_state.get("personality_style", "Supportive coach")),
+                                "intensity": int(st.session_state.get("personality_intensity", 1)),
                                 "llm_available": bool(LLM_AVAILABLE),
                             },
                         },
@@ -1106,53 +1774,22 @@ with tab_run:
                     )
 
                     st.session_state["saved_to_s3"] = True
-                    st.success("Uploaded ✅ Videos + analysis + manifest saved to S3.")
-
-                    st.caption("Saved keys:")
-                    st.code(
-                        "\n".join(
-                            [
-                                f"s3://{cfg['bucket']}/{coach_key}",
-                                f"s3://{cfg['bucket']}/{user_key}",
-                                f"s3://{cfg['bucket']}/{manifest_key}",
-                            ]
-                        )
-                    )
+                    st.success("Uploaded: Videos + analysis + manifest saved to S3.")
+                    st.caption(f"Manifest: `s3://{cfg['bucket']}/{manifest_key}`")
+                    st.rerun()
 
                 except NoCredentialsError:
                     st.session_state["s3_last_error"] = "No AWS credentials found."
-                    st.error(
-                        "AWS credentials not found. Make sure you configured credentials "
-                        "(AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY or aws configure)."
-                    )
+                    st.error("AWS credentials not found. Make sure you configured credentials.")
                 except ClientError as e:
                     st.session_state["s3_last_error"] = str(e)
                     st.error(f"S3 ClientError: {e}")
                 except Exception as e:
                     st.session_state["s3_last_error"] = str(e)
-                    st.error(f"Unexpected error uploading to S3: {type(e).__name__}: {e}")
-
-    # ----------------------------- Debug -----------------------------
-    with st.expander("Debug: App state"):
-        st.write(
-            {
-                "run_id": st.session_state.get("run_id"),
-                "created_at_utc": st.session_state.get("run_created_at"),
-                "saved_to_s3": st.session_state.get("saved_to_s3"),
-                "s3_last_error": st.session_state.get("s3_last_error"),
-                "LLM_AVAILABLE": LLM_AVAILABLE,
-                "use_gemini": use_gemini,
-                "personality": personality,
-                "intensity": intensity,
-                "stage1_done": st.session_state["stage1_done"],
-                "stage2_done": st.session_state["stage2_done"],
-                "coach_driver": st.session_state.get("coach_driver"),
-                "N": st.session_state.get("N"),
-                "artifacts_local": st.session_state.get("artifacts_local", {}),
-            }
-        )
-        if _llm_err is not None:
-            st.write({"llm_import_error": f"{type(_llm_err).__name__}: {_llm_err}"})
+                    st.error(f"Unexpected error: {type(e).__name__}: {e}")
+        elif st.session_state.get("saved_to_s3", False):
+            st.divider()
+            st.success("This run is already saved to S3.")
 
 
 # ==============================
@@ -1211,7 +1848,7 @@ with tab_history:
         st.stop()
 
     df_hist_display = df_hist[["created_at_utc", "exercise_label", "coach_driver", "llm_style", "tip_preview", "run_id"]]
-    st.dataframe(df_hist_display, use_container_width=True, hide_index=True)
+    st.dataframe(df_hist_display, width='stretch', hide_index=True)
 
     run_options = df_hist["run_id"].tolist()
     selected_run = st.selectbox("Select a run to view details", run_options, index=0)
@@ -1270,7 +1907,7 @@ with tab_history:
                     }
                 )
             df_rep = pd.DataFrame(rep_rows).sort_values("rep_id")
-            st.dataframe(df_rep, use_container_width=True, hide_index=True)
+            st.dataframe(df_rep, width='stretch', hide_index=True)
 
             rep_pick_hist = st.selectbox(
                 "Inspect rep",
