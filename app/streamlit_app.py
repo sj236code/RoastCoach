@@ -2777,6 +2777,88 @@ with tab_history:
 
     st.markdown("</div>", unsafe_allow_html=True)
 
+    # Graphs section
+    st.markdown("---")
+    st.markdown("### Analysis Graphs")
+
+    if not BOTO3_AVAILABLE:
+        st.info("boto3 not available. Cannot load graph data.")
+    else:
+        try:
+            manifest = s3_get_json_cached(cfg["bucket"], cfg["region"], current_run["manifest_key"])
+            coach_driver = manifest.get("outputs", {}).get("coach_driver", "")
+            envelope_s3_key = manifest.get("outputs", {}).get("envelope_s3_key")
+            run_id = current_run["run_id"]
+
+            # Load angle CSV files from S3
+            df_coach = None
+            df_user = None
+            try:
+                s3 = boto3.client("s3", region_name=cfg["region"])
+                coach_csv_key = s3_key(run_id, f"{run_id}_angles_coach.csv", "processed/angles")
+                user_csv_key = s3_key(run_id, f"{run_id}_angles_user.csv", "processed/angles")
+
+                try:
+                    coach_obj = s3.get_object(Bucket=cfg["bucket"], Key=coach_csv_key)
+                    df_coach = pd.read_csv(io.StringIO(coach_obj["Body"].read().decode("utf-8")))
+                except Exception:
+                    pass
+
+                try:
+                    user_obj = s3.get_object(Bucket=cfg["bucket"], Key=user_csv_key)
+                    df_user = pd.read_csv(io.StringIO(user_obj["Body"].read().decode("utf-8")))
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+            # Graph 1: Angle Over Time
+            if df_coach is not None and df_user is not None and coach_driver:
+                if coach_driver in df_coach.columns and coach_driver in df_user.columns:
+                    st.markdown("#### Angle Over Time")
+                    fig = plt.figure(figsize=(10, 4))
+                    plt.plot(df_coach["t"], df_coach[coach_driver], label="coach", linewidth=2)
+                    plt.plot(df_user["t"], df_user[coach_driver], label="user", linewidth=2)
+                    plt.xlabel("time (s)")
+                    plt.ylabel("degrees")
+                    plt.title(f"{coach_driver} over time")
+                    plt.legend()
+                    plt.grid(True, alpha=0.3)
+                    plt.tight_layout()
+                    st.pyplot(fig, width='stretch')
+
+            # Graph 2: Coach Envelope
+            if envelope_s3_key and coach_driver:
+                try:
+                    s3 = boto3.client("s3", region_name=cfg["region"])
+                    envelope_obj = s3.get_object(Bucket=cfg["bucket"], Key=envelope_s3_key)
+                    envelope_data = np.load(io.BytesIO(envelope_obj["Body"].read()), allow_pickle=True)
+
+                    angle_cols = list(envelope_data["angle_cols"])
+                    if coach_driver in angle_cols:
+                        j = angle_cols.index(coach_driver)
+                        coach_mean = envelope_data["coach_mean"]
+                        ref_lo = envelope_data["ref_lo"]
+                        ref_hi = envelope_data["ref_hi"]
+                        N = int(envelope_data["N"][0])
+                        tt = np.linspace(0, 1, N)
+
+                        st.markdown("#### Coach Envelope vs User")
+                        fig_env = plt.figure(figsize=(10, 4))
+                        plt.plot(tt, coach_mean[:, j], label="coach mean", linewidth=2, color="blue")
+                        plt.fill_between(tt, ref_lo[:, j], ref_hi[:, j], alpha=0.18, label="coach envelope", color="lightblue")
+                        plt.xlabel("normalized time (0→1)")
+                        plt.ylabel("degrees")
+                        plt.title(f"Coach envelope — {coach_driver}")
+                        plt.legend()
+                        plt.grid(True, alpha=0.3)
+                        plt.tight_layout()
+                        st.pyplot(fig_env, width='stretch')
+                except Exception as e:
+                    st.info(f"Envelope data not available: {str(e)}")
+        except Exception as e:
+            st.warning(f"Could not load graph data: {str(e)}")
+
     # Progress indicator
     st.markdown("---")
     st.markdown(f'<p class="history-progress">{current_index + 1} of {len(runs_for_date)} runs for {selected_date.strftime("%B %d, %Y")}</p>', unsafe_allow_html=True)
