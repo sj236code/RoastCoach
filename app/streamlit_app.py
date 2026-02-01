@@ -10,6 +10,7 @@ import io
 import json
 import os
 import sys
+import time
 import uuid
 from datetime import datetime, timezone, date
 from pathlib import Path
@@ -1449,6 +1450,18 @@ use_gemini = LLM_AVAILABLE  # Always use Gemini if available
 # S3 is always enabled (if configured)
 enable_s3 = s3_enabled()  # Always use S3 if configured
 
+# Initialize chatbot session state
+if "chatbot_open" not in st.session_state:
+    st.session_state["chatbot_open"] = False
+if "chatbot_messages" not in st.session_state:
+    st.session_state["chatbot_messages"] = [
+        {"role": "assistant", "content": "Hello! I'm your RoastCoach assistant. How can I help you today?"}
+    ]
+if "chatbot_loading" not in st.session_state:
+    st.session_state["chatbot_loading"] = False
+if "chatbot_pending_response" not in st.session_state:
+    st.session_state["chatbot_pending_response"] = None
+
 
 # ----------------------------- Tabs -----------------------------
 tab_run, tab_history = st.tabs(["Run", "History"])
@@ -2489,7 +2502,94 @@ with tab_run:
 #           HISTORY
 # ==============================
 with tab_history:
-    st.subheader("History — Calendar View")
+    # Header with chat button
+    col_header1, col_header2 = st.columns([4, 1])
+    with col_header1:
+        st.subheader("History — Calendar View")
+    with col_header2:
+        chatbot_open = st.session_state.get("chatbot_open", False)
+        button_text = "✕ Close Chat" if chatbot_open else "💬 Chat"
+        if st.button(button_text, key="chatbot_toggle", use_container_width=True):
+            st.session_state["chatbot_open"] = not chatbot_open
+            st.rerun()
+
+    # Chatbot Side Panel - Show in sidebar when open
+    if st.session_state.get("chatbot_open", False):
+        with st.sidebar:
+            st.markdown("### 💬 Chat Assistant")
+
+            # Close button
+            if st.button("✕ Close", key="chatbot_close_btn", use_container_width=True):
+                st.session_state["chatbot_open"] = False
+                st.rerun()
+
+            st.divider()
+
+            # Display chat messages
+            for message in st.session_state.get("chatbot_messages", []):
+                with st.chat_message(message["role"]):
+                    st.markdown(message["content"])
+
+            # Show loading indicator if processing
+            if st.session_state.get("chatbot_loading", False):
+                with st.chat_message("assistant"):
+                    with st.spinner("Thinking..."):
+                        time.sleep(2)  # Simulate 2 second processing time
+
+                # Process the pending response after loading
+                if st.session_state.get("chatbot_pending_response"):
+                    response = st.session_state["chatbot_pending_response"]
+                    st.session_state["chatbot_messages"].append({
+                        "role": "assistant",
+                        "content": response
+                    })
+                    st.session_state["chatbot_loading"] = False
+                    st.session_state["chatbot_pending_response"] = None
+                    st.rerun()
+
+            st.divider()
+
+            # Chat input
+            if prompt := st.chat_input("Type your message...", key="chatbot_input"):
+                # Add user message
+                st.session_state["chatbot_messages"].append({"role": "user", "content": prompt})
+
+                # Check if this is the first user message (only welcome message exists)
+                messages = st.session_state.get("chatbot_messages", [])
+                user_message_count = sum(1 for msg in messages if msg.get("role") == "user")
+
+                # Prepare response
+                if user_message_count == 1:
+                    # First user message - provide hardcoded weekly improvement summary
+                    response = """Great to hear from you! Here's a summary of your dynamic movement improvement over the past week:
+
+**Overall Progress:**
+• **Confidence Score**: Improved from 72% to 89% (+17%)
+• **Total Reps Completed**: 45 reps across 4 sessions
+• **Form Consistency**: Increased by 23% compared to last week
+
+**Key Improvements:**
+• **Knee Stability**: Significant improvement in knee tracking during squats
+• **Hip Mobility**: Better range of motion in deadlifts
+• **Core Engagement**: Enhanced core stability throughout movements
+
+**Areas to Focus On:**
+• Continue working on shoulder alignment during overhead presses
+• Maintain depth consistency in squats (currently at 85% target depth)
+
+**Weekly Highlights:**
+• Best session: February 1st - 15 reps with 91% confidence
+• Most improved exercise: Deadlifts (deviation reduced by 8.5°)
+
+Keep up the excellent work! Your form is getting more consistent with each session."""
+                else:
+                    # Subsequent messages - generic response
+                    response = "Thanks for your message! I'm here to help you with your exercise analysis and progress tracking. Feel free to ask me anything about your workout history or form improvements."
+
+                # Set loading state and store response for next rerun
+                st.session_state["chatbot_loading"] = True
+                st.session_state["chatbot_pending_response"] = response
+                st.rerun()
 
     cfg = s3_config()
     if not s3_enabled():
