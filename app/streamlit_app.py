@@ -10,6 +10,7 @@ import io
 import json
 import os
 import sys
+import time
 import uuid
 from datetime import datetime, timezone, date
 from pathlib import Path
@@ -1449,6 +1450,18 @@ use_gemini = LLM_AVAILABLE  # Always use Gemini if available
 # S3 is always enabled (if configured)
 enable_s3 = s3_enabled()  # Always use S3 if configured
 
+# Initialize chatbot session state
+if "chatbot_open" not in st.session_state:
+    st.session_state["chatbot_open"] = False
+if "chatbot_messages" not in st.session_state:
+    st.session_state["chatbot_messages"] = [
+        {"role": "assistant", "content": "Hello! I'm your RoastCoach assistant. How can I help you today?"}
+    ]
+if "chatbot_loading" not in st.session_state:
+    st.session_state["chatbot_loading"] = False
+if "chatbot_pending_response" not in st.session_state:
+    st.session_state["chatbot_pending_response"] = None
+
 
 # ----------------------------- Tabs -----------------------------
 tab_run, tab_history = st.tabs(["Run", "History"])
@@ -2489,7 +2502,94 @@ with tab_run:
 #           HISTORY
 # ==============================
 with tab_history:
-    st.subheader("History — Calendar View")
+    # Header with chat button
+    col_header1, col_header2 = st.columns([4, 1])
+    with col_header1:
+        st.subheader("History — Calendar View")
+    with col_header2:
+        chatbot_open = st.session_state.get("chatbot_open", False)
+        button_text = "✕ Close Chat" if chatbot_open else "💬 Chat"
+        if st.button(button_text, key="chatbot_toggle", use_container_width=True):
+            st.session_state["chatbot_open"] = not chatbot_open
+            st.rerun()
+
+    # Chatbot Side Panel - Show in sidebar when open
+    if st.session_state.get("chatbot_open", False):
+        with st.sidebar:
+            st.markdown("### 💬 Chat Assistant")
+
+            # Close button
+            if st.button("✕ Close", key="chatbot_close_btn", use_container_width=True):
+                st.session_state["chatbot_open"] = False
+                st.rerun()
+
+            st.divider()
+
+            # Display chat messages
+            for message in st.session_state.get("chatbot_messages", []):
+                with st.chat_message(message["role"]):
+                    st.markdown(message["content"])
+
+            # Show loading indicator if processing
+            if st.session_state.get("chatbot_loading", False):
+                with st.chat_message("assistant"):
+                    with st.spinner("Thinking..."):
+                        time.sleep(2)  # Simulate 2 second processing time
+
+                # Process the pending response after loading
+                if st.session_state.get("chatbot_pending_response"):
+                    response = st.session_state["chatbot_pending_response"]
+                    st.session_state["chatbot_messages"].append({
+                        "role": "assistant",
+                        "content": response
+                    })
+                    st.session_state["chatbot_loading"] = False
+                    st.session_state["chatbot_pending_response"] = None
+                    st.rerun()
+
+            st.divider()
+
+            # Chat input
+            if prompt := st.chat_input("Type your message...", key="chatbot_input"):
+                # Add user message
+                st.session_state["chatbot_messages"].append({"role": "user", "content": prompt})
+
+                # Check if this is the first user message (only welcome message exists)
+                messages = st.session_state.get("chatbot_messages", [])
+                user_message_count = sum(1 for msg in messages if msg.get("role") == "user")
+
+                # Prepare response
+                if user_message_count == 1:
+                    # First user message - provide hardcoded weekly improvement summary
+                    response = """Great to hear from you! Here's a summary of your dynamic movement improvement over the past week:
+
+**Overall Progress:**
+• **Confidence Score**: Improved from 72% to 89% (+17%)
+• **Total Reps Completed**: 45 reps across 4 sessions
+• **Form Consistency**: Increased by 23% compared to last week
+
+**Key Improvements:**
+• **Knee Stability**: Significant improvement in knee tracking during squats
+• **Hip Mobility**: Better range of motion in deadlifts
+• **Core Engagement**: Enhanced core stability throughout movements
+
+**Areas to Focus On:**
+• Continue working on shoulder alignment during overhead presses
+• Maintain depth consistency in squats (currently at 85% target depth)
+
+**Weekly Highlights:**
+• Best session: February 1st - 15 reps with 91% confidence
+• Most improved exercise: Deadlifts (deviation reduced by 8.5°)
+
+Keep up the excellent work! Your form is getting more consistent with each session."""
+                else:
+                    # Subsequent messages - generic response
+                    response = "Thanks for your message! I'm here to help you with your exercise analysis and progress tracking. Feel free to ask me anything about your workout history or form improvements."
+
+                # Set loading state and store response for next rerun
+                st.session_state["chatbot_loading"] = True
+                st.session_state["chatbot_pending_response"] = response
+                st.rerun()
 
     cfg = s3_config()
     if not s3_enabled():
@@ -2776,6 +2876,88 @@ with tab_history:
             })
 
     st.markdown("</div>", unsafe_allow_html=True)
+
+    # Graphs section
+    st.markdown("---")
+    st.markdown("### Analysis Graphs")
+
+    if not BOTO3_AVAILABLE:
+        st.info("boto3 not available. Cannot load graph data.")
+    else:
+        try:
+            manifest = s3_get_json_cached(cfg["bucket"], cfg["region"], current_run["manifest_key"])
+            coach_driver = manifest.get("outputs", {}).get("coach_driver", "")
+            envelope_s3_key = manifest.get("outputs", {}).get("envelope_s3_key")
+            run_id = current_run["run_id"]
+
+            # Load angle CSV files from S3
+            df_coach = None
+            df_user = None
+            try:
+                s3 = boto3.client("s3", region_name=cfg["region"])
+                coach_csv_key = s3_key(run_id, f"{run_id}_angles_coach.csv", "processed/angles")
+                user_csv_key = s3_key(run_id, f"{run_id}_angles_user.csv", "processed/angles")
+
+                try:
+                    coach_obj = s3.get_object(Bucket=cfg["bucket"], Key=coach_csv_key)
+                    df_coach = pd.read_csv(io.StringIO(coach_obj["Body"].read().decode("utf-8")))
+                except Exception:
+                    pass
+
+                try:
+                    user_obj = s3.get_object(Bucket=cfg["bucket"], Key=user_csv_key)
+                    df_user = pd.read_csv(io.StringIO(user_obj["Body"].read().decode("utf-8")))
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+            # Graph 1: Angle Over Time
+            if df_coach is not None and df_user is not None and coach_driver:
+                if coach_driver in df_coach.columns and coach_driver in df_user.columns:
+                    st.markdown("#### Angle Over Time")
+                    fig = plt.figure(figsize=(10, 4))
+                    plt.plot(df_coach["t"], df_coach[coach_driver], label="coach", linewidth=2)
+                    plt.plot(df_user["t"], df_user[coach_driver], label="user", linewidth=2)
+                    plt.xlabel("time (s)")
+                    plt.ylabel("degrees")
+                    plt.title(f"{coach_driver} over time")
+                    plt.legend()
+                    plt.grid(True, alpha=0.3)
+                    plt.tight_layout()
+                    st.pyplot(fig, width='stretch')
+
+            # Graph 2: Coach Envelope
+            if envelope_s3_key and coach_driver:
+                try:
+                    s3 = boto3.client("s3", region_name=cfg["region"])
+                    envelope_obj = s3.get_object(Bucket=cfg["bucket"], Key=envelope_s3_key)
+                    envelope_data = np.load(io.BytesIO(envelope_obj["Body"].read()), allow_pickle=True)
+
+                    angle_cols = list(envelope_data["angle_cols"])
+                    if coach_driver in angle_cols:
+                        j = angle_cols.index(coach_driver)
+                        coach_mean = envelope_data["coach_mean"]
+                        ref_lo = envelope_data["ref_lo"]
+                        ref_hi = envelope_data["ref_hi"]
+                        N = int(envelope_data["N"][0])
+                        tt = np.linspace(0, 1, N)
+
+                        st.markdown("#### Coach Envelope vs User")
+                        fig_env = plt.figure(figsize=(10, 4))
+                        plt.plot(tt, coach_mean[:, j], label="coach mean", linewidth=2, color="blue")
+                        plt.fill_between(tt, ref_lo[:, j], ref_hi[:, j], alpha=0.18, label="coach envelope", color="lightblue")
+                        plt.xlabel("normalized time (0→1)")
+                        plt.ylabel("degrees")
+                        plt.title(f"Coach envelope — {coach_driver}")
+                        plt.legend()
+                        plt.grid(True, alpha=0.3)
+                        plt.tight_layout()
+                        st.pyplot(fig_env, width='stretch')
+                except Exception as e:
+                    st.info(f"Envelope data not available: {str(e)}")
+        except Exception as e:
+            st.warning(f"Could not load graph data: {str(e)}")
 
     # Progress indicator
     st.markdown("---")
