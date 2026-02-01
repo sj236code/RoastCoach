@@ -1804,8 +1804,8 @@ with tab_run:
                 final_tip = generate_personality_tip(
                     analysis=chosen,
                     base_tip=base_tip,
-                    style=st.session_state.get("personality_style", "Supportive coach"),
-                    intensity=int(st.session_state.get("personality_intensity", 1)),
+                    style="MEGA ROAST",
+                    intensity=2,
                 )
                 if not isinstance(final_tip, dict) or "one_sentence_tip" not in final_tip:
                     final_tip = base_tip
