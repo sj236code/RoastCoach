@@ -1,0 +1,70 @@
+[
+  {
+    "rep_id": 0,
+    "confidence": 0.8302388569609012,
+    "reference_stability": 0.35765229976503193,
+    "events": [
+      {
+        "joint": "left_knee_flex",
+        "phase": "bottom",
+        "direction": "above_reference",
+        "deg_outside": 62.27640727495043,
+        "persistence": 0.83,
+        "severity": "severe",
+        "persistence_label": "persistent"
+      },
+      {
+        "joint": "right_knee_flex",
+        "phase": "bottom",
+        "direction": "above_reference",
+        "deg_outside": 21.428785960092156,
+        "persistence": 0.58,
+        "severity": "severe",
+        "persistence_label": "persistent"
+      },
+      {
+        "joint": "trunk_incline",
+        "phase": "bottom",
+        "direction": "above_reference",
+        "deg_outside": 17.226313094875657,
+        "persistence": 0.88,
+        "severity": "moderate",
+        "persistence_label": "persistent"
+      }
+    ]
+  },
+  {
+    "rep_id": 1,
+    "confidence": 0.7774728115117985,
+    "reference_stability": 0.35765229976503193,
+    "events": [
+      {
+        "joint": "left_knee_flex",
+        "phase": "bottom",
+        "direction": "above_reference",
+        "deg_outside": 73.9812759373134,
+        "persistence": 0.62,
+        "severity": "severe",
+        "persistence_label": "persistent"
+      },
+      {
+        "joint": "right_knee_flex",
+        "phase": "ascent",
+        "direction": "above_reference",
+        "deg_outside": 35.486210112728045,
+        "persistence": 0.73,
+        "severity": "severe",
+        "persistence_label": "persistent"
+      },
+      {
+        "joint": "trunk_incline",
+        "phase": "bottom",
+        "direction": "above_reference",
+        "deg_outside": 19.35412233225658,
+        "persistence": 0.57,
+        "severity": "moderate",
+        "persistence_label": "persistent"
+      }
+    ]
+  }
+]
