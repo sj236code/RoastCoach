@@ -100,8 +100,54 @@ def severity_from_deg(deg_outside: float, mild=5.0, moderate=12.0, severe=20.0) 
         return "mild"
     return "none"
 
+def min_halfwidth_for_joint(j: str) -> float:
+    """
+    Minimum envelope HALF-width (degrees) for each joint.
+    Prevents brittle near-zero tolerance tubes (std ~ 0).
+    Tune these numbers as you like.
+    """
+    j = j.lower()
+    if "knee_flex" in j or "elbow_flex" in j:
+        return 5.0  # => min envelope width 10°
+    if "trunk_incline" in j:
+        return 3.0  # => min envelope width 6°
+    return 4.0
 
-# -------------------- NEW: safer coaching cue logic --------------------
+
+def apply_envelope_floor(angle_cols, coach_mean, ref_lo, ref_hi):
+    """
+    Enforces a minimum envelope width per joint across all timesteps:
+      half_width = max( (ref_hi-ref_lo)/2, min_halfwidth(joint) )
+      ref_lo/ref_hi recentered on coach_mean
+    """
+    min_half = np.array([min_halfwidth_for_joint(c) for c in angle_cols], dtype=float)[None, :]  # (1, J)
+
+    ref_center = coach_mean
+    half_width = 0.5 * (ref_hi - ref_lo)
+
+    half_width = np.maximum(half_width, min_half)
+
+    ref_lo2 = ref_center - half_width
+    ref_hi2 = ref_center + half_width
+    return ref_lo2, ref_hi2, half_width
+
+
+def robust_joint_max(over: np.ndarray, q: float = 95.0) -> np.ndarray:
+    """
+    Robust max deviation per joint (percentile instead of true max).
+    Reduces one-frame spikes from dominating.
+    over: (N, J)
+    returns: (J,)
+    """
+    return np.nanpercentile(over, q, axis=0)
+
+
+def pretty_joint(j: str) -> str:
+    """Human-friendly joint label."""
+    return j.replace("_", " ")
+
+
+# -------------------- Safer coaching cue logic --------------------
 def _event_priority(e: dict) -> tuple:
     """
     Higher is better. Sort by:
@@ -204,12 +250,11 @@ def make_tip_from_events(
     """
     Constrained, safe coaching tip (no LLM).
 
-    NEW POLICY:
+    POLICY:
     - Hard gate only on confidence (tracking quality).
     - If stability is low, still coach in "quick mode" using top event
       (but UI can warn that reference is unstable).
     """
-    # HARD GATE: low confidence => re-record
     if confidence < min_conf:
         return {
             "one_sentence_tip": "Re-record: keep your whole body in frame with good lighting and steady camera.",
@@ -224,7 +269,6 @@ def make_tip_from_events(
             "phase": "n/a",
         }
 
-    # If stability is low, we still coach (quick mode) if allowed
     if stability < min_stability and not allow_quick_mode:
         return {
             "one_sentence_tip": "Re-record: do 3–5 consistent coach reps so the reference envelope is stable.",
@@ -232,11 +276,10 @@ def make_tip_from_events(
             "phase": "n/a",
         }
 
-    # Choose top event
     events_sorted = sorted(events, key=_event_priority, reverse=True)
     best = events_sorted[0]
     return _event_to_tip(best)
-# ----------------------------------------------------------------------
+# ------------------------------------------------------------------
 
 
 # ---------- Import backend pipeline (pose -> angles -> segmentation) ----------
@@ -450,6 +493,21 @@ if run:
     env_method = st.selectbox("Envelope method", ["std*k", "percentile (10–90)"], index=0)
     k = st.slider("k (std multiplier)", 0.5, 3.0, 1.5, 0.1)
 
+    # NEW: envelope floor controls
+    use_floor = st.checkbox("Use minimum envelope width floor (recommended)", value=True)
+    knee_floor = st.slider("Min half-width for knee/elbow (deg)", 1.0, 15.0, 5.0, 0.5)
+    trunk_floor = st.slider("Min half-width for trunk_incline (deg)", 1.0, 10.0, 3.0, 0.5)
+
+    # Override the helper floor values from UI sliders
+    def min_halfwidth_for_joint_ui(j: str) -> float:
+        j = j.lower()
+        if "knee_flex" in j or "elbow_flex" in j:
+            return float(knee_floor)
+        if "trunk_incline" in j:
+            return float(trunk_floor)
+        return 4.0
+
+    # Compute raw envelope
     if env_method == "std*k":
         tol = coach_std * k
         ref_lo = coach_mean - tol
@@ -460,6 +518,14 @@ if run:
         ref_hi = np.nanpercentile(coach_stack, 90, axis=0)
         band_width = float(np.nanmean(ref_hi - ref_lo))
         stability = float(1.0 / (1.0 + band_width))
+
+    # Apply floor (prevents ref_lo/ref_hi being almost identical)
+    if use_floor:
+        min_half = np.array([min_halfwidth_for_joint_ui(c) for c in angle_cols], dtype=float)[None, :]  # (1,J)
+        half_width = 0.5 * (ref_hi - ref_lo)
+        half_width = np.maximum(half_width, min_half)
+        ref_lo = coach_mean - half_width
+        ref_hi = coach_mean + half_width
 
     st.write(f"Reference stability (proxy): **{stability:.2f}**")
     min_stability = st.slider("Warn if stability < ", 0.1, 1.0, 0.6, 0.05)
@@ -490,6 +556,7 @@ if run:
     )
     st.caption(f"Saved envelope: `{env_path}`")
 
+
     # ---------- Deviation Detection ----------
     st.divider()
     st.subheader("Deviation Detection (User reps vs Coach envelope)")
@@ -497,8 +564,13 @@ if run:
     mild = st.slider("Mild threshold (deg outside)", 1.0, 20.0, 5.0, 0.5)
     moderate = st.slider("Moderate threshold (deg outside)", 5.0, 40.0, 12.0, 0.5)
     severe = st.slider("Severe threshold (deg outside)", 10.0, 60.0, 20.0, 0.5)
+
     persistent_thresh = st.slider("Persistent if outside > (%)", 0, 100, 20, 5) / 100.0
     bottom_window = st.slider("Bottom window size (normalized %)", 2, 20, 8, 1) / 100.0
+
+    # NEW: robust max option
+    use_robust = st.checkbox("Use robust max (95th percentile) for deg_outside", value=True)
+    robust_q = st.slider("Robust percentile (q)", 80, 100, 95, 1)
 
     driver_idx = angle_cols.index(coach_driver) if coach_driver in angle_cols else 0
 
@@ -506,20 +578,31 @@ if run:
     for ridx, r in enumerate(user_reps):
         user_mat = resample_rep_angles(df_user, r, angle_cols, N=N)  # (N, J)
 
+        # bottom index based on driver joint (min interior angle = deepest bend)
         idx_bottom = int(np.nanargmin(user_mat[:, driver_idx]))
 
+        # pointwise outside envelope (positive if outside)
         below = ref_lo - user_mat
         above = user_mat - ref_hi
         over = np.maximum(0.0, np.maximum(below, above))  # (N, J)
 
-        max_over = np.nanmax(over, axis=0)
-        persist = np.nanmean(over > 0, axis=0)
+        # deg_outside per joint
+        if use_robust:
+            max_over = np.nanpercentile(over, float(robust_q), axis=0)  # (J,)
+        else:
+            max_over = np.nanmax(over, axis=0)  # (J,)
 
+        persist = np.nanmean(over > 0, axis=0)  # (J,)
+
+        # Focus only on relevant joints based on driver
         focus_cols = focus_joints_from_driver(coach_driver, angle_cols)
         focus_idx = [angle_cols.index(c) for c in focus_cols]
 
-        # rank only within focus joints
-        ranked_focus = sorted(focus_idx, key=lambda jj: (max_over[jj], persist[jj]), reverse=True)
+        ranked_focus = sorted(
+            focus_idx,
+            key=lambda jj: (float(max_over[jj]), float(persist[jj])),
+            reverse=True
+        )
         top_idx = ranked_focus[:3]
 
         events = []
@@ -545,15 +628,36 @@ if run:
                 "persistence_label": "persistent" if float(persist[jj]) >= persistent_thresh else "brief",
             })
 
+        # confidence = pose mean conf + rep quality
         pose_conf = float(np.nanmean(df_user["conf"])) if "conf" in df_user.columns else 1.0
         rep_conf = float(np.clip(r.quality, 0.0, 1.0))
         confidence = float(0.5 * pose_conf + 0.5 * rep_conf)
+
+        # --- Optional debug info per rep (helps you validate floor works) ---
+        dbg = {
+            "driver_joint": coach_driver,
+            "idx_bottom": int(idx_bottom),
+            "bottom_values": {
+                "coach_mean": float(coach_mean[idx_bottom, driver_idx]),
+                "user": float(user_mat[idx_bottom, driver_idx]),
+                "ref_lo": float(ref_lo[idx_bottom, driver_idx]),
+                "ref_hi": float(ref_hi[idx_bottom, driver_idx]),
+                "envelope_width": float(ref_hi[idx_bottom, driver_idx] - ref_lo[idx_bottom, driver_idx]),
+            },
+            "ranges": {
+                "user_min": float(np.nanmin(user_mat[:, driver_idx])),
+                "user_max": float(np.nanmax(user_mat[:, driver_idx])),
+                "coach_mean_min": float(np.nanmin(coach_mean[:, driver_idx])),
+                "coach_mean_max": float(np.nanmax(coach_mean[:, driver_idx])),
+            }
+        }
 
         analyses.append({
             "rep_id": ridx,
             "confidence": confidence,
             "reference_stability": stability,
-            "events": events
+            "events": events,
+            "debug": dbg,
         })
 
     st.write(f"Analyzed **{len(analyses)}** user reps.")
@@ -564,6 +668,7 @@ if run:
     analysis_path.write_text(json.dumps(analyses, indent=2))
     st.caption(f"Saved analysis: `{analysis_path}`")
 
+
     # ---------- One-sentence coaching cue ----------
     st.divider()
     st.subheader("Coaching cue (constrained, no LLM yet)")
@@ -573,7 +678,6 @@ if run:
 
     chosen = analyses[rep_pick]
 
-    # NEW toggle
     allow_quick = st.checkbox("Allow Quick Mode when stability is low", value=True)
 
     tip = make_tip_from_events(
