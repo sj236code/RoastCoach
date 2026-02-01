@@ -1,29 +1,15 @@
 # app/streamlit_app.py
 # RoastCoach — Streamlit UI with cached pipeline + stable widget state + Gemini personality toggle
-#
-# Fixes:
-# - Streamlit reruns on EVERY widget change (normal). We prevent expensive stages from re-running
-#   by caching + st.session_state.
-# - Stage 1 (pose+angles) runs only when you click the button or change videos.
-# - Stage 2 (segmentation+normalization) runs only when you click the button (after changing filters/N).
-# - Stage 3 (envelope/deviation/LLM tip) is fast and updates live as sliders move.
-#
-# Directory assumptions:
-#   RoastCoach/
-#     app/streamlit_app.py   (this file)
-#     backend/src/pose.py
-#     backend/src/angles.py
-#     backend/src/segment.py
-#     backend/src/llm_coach.py   (optional, Gemini)
-#     data/raw/
-#     data/processed/
+# PLUS: S3 persistence for progress tracking (videos + analysis.json + artifacts)
 
 from __future__ import annotations
 
 import base64
 import json
+import os
 import sys
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
@@ -31,6 +17,18 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import streamlit as st
+
+# Optional S3
+try:
+    import boto3
+    from botocore.exceptions import NoCredentialsError, ClientError
+    BOTO3_AVAILABLE = True
+except Exception:
+    BOTO3_AVAILABLE = False
+    boto3 = None
+    NoCredentialsError = Exception  # type: ignore
+    ClientError = Exception  # type: ignore
+
 
 # ----------------------------- Page config -----------------------------
 st.set_page_config(page_title="RoastCoach", layout="wide")
@@ -106,6 +104,14 @@ def ss_init():
         "user_mean": None,
         "user_std": None,
         "user_stack": None,
+        # run tracking (local + s3)
+        "run_id": None,
+        "run_created_at": None,
+        "latest_analysis": None,
+        "latest_tip": None,
+        "saved_to_s3": False,
+        "s3_last_error": None,
+        "artifacts_local": {},  # file paths for this run (filled after analysis)
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -115,10 +121,22 @@ def ss_init():
 ss_init()
 
 # ----------------------------- Helpers -----------------------------
-def save_upload(uploaded_file, out_dir: Path, prefix: str) -> Path:
+def utc_run_id() -> Tuple[str, str]:
+    """
+    Returns (run_id, iso_timestamp).
+    run_id is filesystem-friendly but preserves time ordering.
+    """
+    now = datetime.now(timezone.utc)
+    iso = now.isoformat(timespec="seconds")
+    run_id = now.strftime("%Y%m%dT%H%M%SZ") + "_" + uuid.uuid4().hex[:8]
+    return run_id, iso
+
+
+def save_upload(uploaded_file, out_dir: Path, prefix: str, run_id: str | None = None) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
     suffix = Path(uploaded_file.name).suffix
-    fname = f"{prefix}_{uuid.uuid4().hex[:8]}{suffix}"
+    rid = run_id or uuid.uuid4().hex[:8]
+    fname = f"{prefix}_{rid}{suffix}"
     out_path = out_dir / fname
     out_path.write_bytes(uploaded_file.getbuffer())
     return out_path
@@ -325,6 +343,92 @@ def cached_angles(frames):
     return compute_angles(frames)
 
 
+# ----------------------------- S3 helpers -----------------------------
+def s3_config() -> Dict[str, str]:
+    return {
+        "bucket": os.getenv("ROASTCOACH_S3_BUCKET", "").strip(),
+        "region": os.getenv("AWS_REGION", "us-east-1").strip(),
+        "prefix": os.getenv("ROASTCOACH_S3_PREFIX", "roastcoach").strip().strip("/"),
+        "user_id": os.getenv("ROASTCOACH_USER_ID", "anonymous").strip(),
+    }
+
+
+def s3_enabled() -> bool:
+    cfg = s3_config()
+    return BOTO3_AVAILABLE and bool(cfg["bucket"])
+
+
+def s3_client():
+    cfg = s3_config()
+    return boto3.client("s3", region_name=cfg["region"])
+
+
+def s3_key(run_id: str, filename: str, kind: str) -> str:
+    """
+    kind examples:
+      - raw/coach_video.mp4
+      - raw/user_video.mp4
+      - processed/analysis.json
+      - processed/angles_coach.csv
+      - processed/envelope.npz
+      - manifest.json
+    """
+    cfg = s3_config()
+    # layout: prefix/user_id/run_id/kind
+    return f"{cfg['prefix']}/{cfg['user_id']}/{run_id}/{kind}/{filename}"
+
+
+def s3_put_file(local_path: Path, key: str, content_type: str | None = None, metadata: Dict[str, str] | None = None):
+    cli = s3_client()
+    extra = {}
+    if content_type:
+        extra["ContentType"] = content_type
+    if metadata:
+        # S3 metadata keys must be strings, lowercase recommended
+        extra["Metadata"] = {str(k).lower(): str(v) for k, v in metadata.items()}
+    with local_path.open("rb") as f:
+        cli.put_object(Bucket=s3_config()["bucket"], Key=key, Body=f, **extra)
+
+
+def s3_put_bytes(data: bytes, key: str, content_type: str | None = None, metadata: Dict[str, str] | None = None):
+    cli = s3_client()
+    extra = {}
+    if content_type:
+        extra["ContentType"] = content_type
+    if metadata:
+        extra["Metadata"] = {str(k).lower(): str(v) for k, v in metadata.items()}
+    cli.put_object(Bucket=s3_config()["bucket"], Key=key, Body=data, **extra)
+
+
+def guess_video_content_type(p: Path) -> str:
+    suf = p.suffix.lower()
+    if suf == ".mov":
+        return "video/quicktime"
+    if suf in (".m4v", ".mp4"):
+        return "video/mp4"
+    return "application/octet-stream"
+
+
+def reset_run_state_on_new_videos():
+    st.session_state["stage1_done"] = False
+    st.session_state["stage2_done"] = False
+    st.session_state["df_coach"] = None
+    st.session_state["df_user"] = None
+    st.session_state["shared_cols"] = None
+    st.session_state["coach_driver"] = None
+    st.session_state["coach_reps"] = None
+    st.session_state["user_reps"] = None
+    st.session_state["coach_mean"] = None
+    st.session_state["user_mean"] = None
+    st.session_state["latest_analysis"] = None
+    st.session_state["latest_tip"] = None
+    st.session_state["artifacts_local"] = {}
+    st.session_state["saved_to_s3"] = False
+    st.session_state["s3_last_error"] = None
+    st.session_state["run_id"] = None
+    st.session_state["run_created_at"] = None
+
+
 # ----------------------------- Sidebar controls -----------------------------
 st.sidebar.header("Controls")
 st.sidebar.caption("These persist across reruns.")
@@ -351,6 +455,32 @@ if use_gemini and not LLM_AVAILABLE:
     if _llm_err is not None:
         st.sidebar.caption(f"Import error: {type(_llm_err).__name__}: {_llm_err}")
 
+# ---- S3 sidebar section ----
+st.sidebar.divider()
+st.sidebar.subheader("Progress tracking (S3)")
+
+cfg = s3_config()
+st.sidebar.caption(
+    f"Bucket: `{cfg['bucket'] or 'NOT SET'}`\n\n"
+    f"Region: `{cfg['region']}`\n\n"
+    f"Prefix: `{cfg['prefix']}`\n\n"
+    f"User ID: `{cfg['user_id']}`"
+)
+
+enable_s3 = st.sidebar.checkbox(
+    "Enable S3 saving for this session",
+    value=False,
+    key="enable_s3_saving",
+    help="Uploads videos + analysis.json + artifacts to S3 when you click 'Save this run to S3'.",
+)
+
+if enable_s3 and not s3_enabled():
+    if not BOTO3_AVAILABLE:
+        st.sidebar.error("boto3 not available. Install with: `pip install boto3`")
+    if not cfg["bucket"]:
+        st.sidebar.error("Set env var: ROASTCOACH_S3_BUCKET")
+
+
 # ----------------------------- Upload UI -----------------------------
 col1, col2 = st.columns(2)
 with col1:
@@ -360,9 +490,6 @@ with col2:
     st.subheader("2) User Attempt Video")
     user_file = st.file_uploader("Upload user attempt (.mp4/.mov/.m4v)", type=["mp4", "mov", "m4v"], key="user")
 
-coach_path = save_upload(coach_file, DATA_RAW, prefix="coach") if coach_file else None
-user_path = save_upload(user_file, DATA_RAW, prefix="user") if user_file else None
-
 # Reset stages only when videos change
 if coach_file and user_file:
     sig_c = file_signature(coach_file)
@@ -370,32 +497,21 @@ if coach_file and user_file:
     if (st.session_state["coach_file_sig"] != sig_c) or (st.session_state["user_file_sig"] != sig_u):
         st.session_state["coach_file_sig"] = sig_c
         st.session_state["user_file_sig"] = sig_u
-
-        st.session_state["stage1_done"] = False
-        st.session_state["stage2_done"] = False
-
-        # clear cached outputs for stages
-        st.session_state["df_coach"] = None
-        st.session_state["df_user"] = None
-        st.session_state["shared_cols"] = None
-        st.session_state["coach_driver"] = None
-        st.session_state["coach_reps"] = None
-        st.session_state["user_reps"] = None
-        st.session_state["coach_mean"] = None
-        st.session_state["user_mean"] = None
+        reset_run_state_on_new_videos()
 
 # ----------------------------- Previews -----------------------------
 st.divider()
 st.subheader("Previews")
 left, right = st.columns(2)
 
+# Save uploads locally only AFTER we have a run_id (created on Stage 1 click).
+# But we still want previews now — that's fine; we can show them directly.
 with left:
     st.markdown("**Coach Preview**")
     if coach_file:
         video_small(coach_file, width_px=360)
         with st.expander("View coach video large"):
             st.video(coach_file)
-        st.caption(f"Saved as: `{coach_path.name}`")
     else:
         st.info("Upload a coach reference video to preview it here.")
 
@@ -405,9 +521,9 @@ with right:
         video_small(user_file, width_px=360)
         with st.expander("View user video large"):
             st.video(user_file)
-        st.caption(f"Saved as: `{user_path.name}`")
     else:
         st.info("Upload a user attempt video to preview it here.")
+
 
 # ----------------------------- Stage 1 -----------------------------
 st.divider()
@@ -416,10 +532,25 @@ st.subheader("Stage 1 — Compute pose + angles (expensive)")
 compute_btn = st.button(
     "Compute pose + angles",
     type="primary",
-    disabled=not (coach_path and user_path),
+    disabled=not (coach_file and user_file),
 )
 
 if compute_btn:
+    # Create a new run id for tracking this attempt
+    run_id, iso_ts = utc_run_id()
+    st.session_state["run_id"] = run_id
+    st.session_state["run_created_at"] = iso_ts
+    st.session_state["saved_to_s3"] = False
+    st.session_state["s3_last_error"] = None
+    st.session_state["artifacts_local"] = {}
+
+    # Save uploads locally with run_id in filename (so you can also track locally)
+    coach_path = save_upload(coach_file, DATA_RAW, prefix="coach", run_id=run_id)
+    user_path = save_upload(user_file, DATA_RAW, prefix="user", run_id=run_id)
+
+    st.session_state["coach_path"] = coach_path
+    st.session_state["user_path"] = user_path
+
     st.session_state["stage1_done"] = False
     st.session_state["stage2_done"] = False
 
@@ -436,19 +567,33 @@ if compute_btn:
     df_coach = angles_to_df(coach_angles)
     df_user = angles_to_df(user_angles)
 
-    # Save CSVs
-    coach_csv = DATA_PROCESSED / "angles_coach.csv"
-    user_csv = DATA_PROCESSED / "angles_user.csv"
-    df_coach.to_csv(coach_csv, index=False)
-    df_user.to_csv(user_csv, index=False)
+    # Save CSVs (run-specific + latest)
+    coach_csv_run = DATA_PROCESSED / f"{run_id}_angles_coach.csv"
+    user_csv_run = DATA_PROCESSED / f"{run_id}_angles_user.csv"
+    coach_csv_latest = DATA_PROCESSED / "angles_coach.csv"
+    user_csv_latest = DATA_PROCESSED / "angles_user.csv"
+
+    df_coach.to_csv(coach_csv_run, index=False)
+    df_user.to_csv(user_csv_run, index=False)
+    df_coach.to_csv(coach_csv_latest, index=False)
+    df_user.to_csv(user_csv_latest, index=False)
 
     st.session_state["df_coach"] = df_coach
     st.session_state["df_user"] = df_user
-    st.session_state["coach_path"] = coach_path
-    st.session_state["user_path"] = user_path
     st.session_state["stage1_done"] = True
 
+    st.session_state["artifacts_local"].update(
+        {
+            "coach_video": str(coach_path),
+            "user_video": str(user_path),
+            "angles_coach_csv": str(coach_csv_run),
+            "angles_user_csv": str(user_csv_run),
+        }
+    )
+
     st.success("Stage 1 complete ✅ Pose + angles cached")
+    st.caption(f"Run ID: `{run_id}`  |  Created (UTC): `{iso_ts}`")
+    st.caption(f"Saved locally: `{coach_path.name}`, `{user_path.name}`")
 
 if not st.session_state["stage1_done"]:
     st.info("Click **Compute pose + angles** once. After that, widgets won’t re-run expensive steps.")
@@ -456,6 +601,9 @@ if not st.session_state["stage1_done"]:
 
 df_coach: pd.DataFrame = st.session_state["df_coach"]
 df_user: pd.DataFrame = st.session_state["df_user"]
+run_id = st.session_state["run_id"] or "run_unknown"
+run_created_at = st.session_state["run_created_at"] or ""
+
 
 # ----------------------------- Sanity plot -----------------------------
 st.subheader("Angle Sanity Plot")
@@ -618,10 +766,11 @@ plt.title(f"Coach envelope vs user mean — {plot_joint}")
 plt.legend()
 st.pyplot(fig_env)
 
-# Save envelope artifact
-env_path = DATA_PROCESSED / "reference_envelope_coach.npz"
+# Save envelope artifact (run-specific + latest)
+env_path_run = DATA_PROCESSED / f"{run_id}_reference_envelope_coach.npz"
+env_path_latest = DATA_PROCESSED / "reference_envelope_coach.npz"
 np.savez(
-    env_path,
+    env_path_run,
     angle_cols=np.array(angle_cols, dtype=object),
     coach_mean=coach_mean,
     ref_lo=ref_lo,
@@ -629,7 +778,17 @@ np.savez(
     stability=np.array([stability]),
     N=np.array([N]),
 )
-st.caption(f"Saved envelope: `{env_path}`")
+np.savez(
+    env_path_latest,
+    angle_cols=np.array(angle_cols, dtype=object),
+    coach_mean=coach_mean,
+    ref_lo=ref_lo,
+    ref_hi=ref_hi,
+    stability=np.array([stability]),
+    N=np.array([N]),
+)
+st.session_state["artifacts_local"]["envelope_npz"] = str(env_path_run)
+st.caption(f"Saved envelope: `{env_path_run.name}`")
 
 # ----------------------------- Deviation detection (live) -----------------------------
 st.subheader("Deviation Detection (user reps vs coach envelope)")
@@ -697,15 +856,27 @@ for ridx, r in enumerate(user_reps):
     rep_conf = float(np.clip(r.quality, 0.0, 1.0))
     confidence = float(0.5 * pose_conf + 0.5 * rep_conf)
 
-    analyses.append({"rep_id": ridx, "confidence": confidence, "reference_stability": stability, "events": events})
+    analyses.append(
+        {
+            "rep_id": ridx,
+            "confidence": confidence,
+            "reference_stability": stability,
+            "events": events,
+        }
+    )
 
 st.write(f"Analyzed **{len(analyses)}** user reps.")
 with st.expander("Preview analysis JSON (first 2 reps)"):
     st.json(analyses[:2])
 
-analysis_path = DATA_PROCESSED / "analysis.json"
-analysis_path.write_text(json.dumps(analyses, indent=2))
-st.caption(f"Saved analysis: `{analysis_path}`")
+# Save analysis (run-specific + latest)
+analysis_path_run = DATA_PROCESSED / f"{run_id}_analysis.json"
+analysis_path_latest = DATA_PROCESSED / "analysis.json"
+analysis_path_run.write_text(json.dumps(analyses, indent=2))
+analysis_path_latest.write_text(json.dumps(analyses, indent=2))
+st.session_state["latest_analysis"] = analyses
+st.session_state["artifacts_local"]["analysis_json"] = str(analysis_path_run)
+st.caption(f"Saved analysis: `{analysis_path_run.name}`")
 
 # ----------------------------- Coaching cue -----------------------------
 st.divider()
@@ -731,8 +902,6 @@ final_tip = base_tip
 # Optional Gemini personality transform
 if use_gemini and LLM_AVAILABLE:
     try:
-        # llm_coach.generate_personality_tip must accept these args and return:
-        # {"one_sentence_tip": "...", "target_joint": "...", "phase": "..."}
         final_tip = generate_personality_tip(
             analysis=chosen,
             base_tip=base_tip,
@@ -746,14 +915,178 @@ if use_gemini and LLM_AVAILABLE:
         st.caption(f"{type(e).__name__}: {e}")
         final_tip = base_tip
 
+st.session_state["latest_tip"] = final_tip
+
 st.success(final_tip["one_sentence_tip"])
 with st.expander("Tip JSON"):
     st.json(final_tip)
+
+
+# ----------------------------- S3 Save (button) -----------------------------
+st.divider()
+st.subheader("Save this run (videos + analysis) to S3")
+
+cfg = s3_config()
+
+if not enable_s3:
+    st.info("Enable S3 saving from the sidebar to upload this run for progress tracking.")
+else:
+    if not s3_enabled():
+        st.error("S3 is not ready. Make sure boto3 is installed and ROASTCOACH_S3_BUCKET is set.")
+    else:
+        # Let the user optionally label the exercise (for future progress UI)
+        exercise_label = st.text_input(
+            "Exercise label (optional)",
+            value=st.session_state.get("exercise_label", ""),
+            key="exercise_label",
+            help="Example: squat, pushup, lunge, deadlift. Stored in manifest.json.",
+        )
+
+        # Show target S3 folder
+        base_prefix = f"{cfg['prefix']}/{cfg['user_id']}/{run_id}/"
+        st.caption(f"S3 destination prefix: `{base_prefix}`")
+
+        save_btn = st.button("Save this run to S3", type="primary", disabled=st.session_state.get("saved_to_s3", False))
+
+        if st.session_state.get("saved_to_s3", False):
+            st.success("This run is already saved to S3 ✅ (you can start a new run by uploading new videos).")
+
+        if save_btn:
+            st.session_state["s3_last_error"] = None
+
+            try:
+                coach_path = Path(st.session_state["coach_path"])
+                user_path = Path(st.session_state["user_path"])
+
+                # Upload videos
+                coach_key = s3_key(run_id, coach_path.name, "raw/coach_video")
+                user_key = s3_key(run_id, user_path.name, "raw/user_video")
+
+                s3_put_file(
+                    coach_path,
+                    coach_key,
+                    content_type=guess_video_content_type(coach_path),
+                    metadata={"run_id": run_id, "role": "coach", "created_at": run_created_at},
+                )
+                s3_put_file(
+                    user_path,
+                    user_key,
+                    content_type=guess_video_content_type(user_path),
+                    metadata={"run_id": run_id, "role": "user", "created_at": run_created_at},
+                )
+
+                # Upload processed artifacts (analysis + angles + envelope)
+                artifacts = st.session_state.get("artifacts_local", {})
+
+                # angles
+                if "angles_coach_csv" in artifacts:
+                    p = Path(artifacts["angles_coach_csv"])
+                    s3_put_file(p, s3_key(run_id, p.name, "processed/angles"), content_type="text/csv")
+                if "angles_user_csv" in artifacts:
+                    p = Path(artifacts["angles_user_csv"])
+                    s3_put_file(p, s3_key(run_id, p.name, "processed/angles"), content_type="text/csv")
+
+                # envelope
+                if "envelope_npz" in artifacts:
+                    p = Path(artifacts["envelope_npz"])
+                    s3_put_file(p, s3_key(run_id, p.name, "processed/envelope"), content_type="application/octet-stream")
+
+                # analysis
+                if "analysis_json" in artifacts:
+                    p = Path(artifacts["analysis_json"])
+                    s3_put_file(p, s3_key(run_id, p.name, "processed/analysis"), content_type="application/json")
+
+                # manifest.json (super important for progress tracking)
+                manifest = {
+                    "run_id": run_id,
+                    "created_at_utc": run_created_at,
+                    "user_id": cfg["user_id"],
+                    "exercise_label": exercise_label.strip() or None,
+                    "inputs": {
+                        "coach_video_s3_key": coach_key,
+                        "user_video_s3_key": user_key,
+                        "coach_video_local": str(coach_path),
+                        "user_video_local": str(user_path),
+                    },
+                    "settings": {
+                        "min_q": float(st.session_state.get("min_q", 0.35)),
+                        "drop_first": bool(st.session_state.get("drop_first", True)),
+                        "N": int(st.session_state.get("N", N)),
+                        "env_method": str(st.session_state.get("env_method", env_method)),
+                        "k_std": float(st.session_state.get("k_std", k)),
+                        "use_floor": bool(st.session_state.get("use_floor", use_floor)),
+                        "knee_floor": float(st.session_state.get("knee_floor", knee_floor)),
+                        "trunk_floor": float(st.session_state.get("trunk_floor", trunk_floor)),
+                        "mild": float(st.session_state.get("mild", mild)),
+                        "moderate": float(st.session_state.get("moderate", moderate)),
+                        "severe": float(st.session_state.get("severe", severe)),
+                        "persist_pct": float(st.session_state.get("persist_pct", persistent_thresh * 100.0)),
+                        "bottom_window": float(st.session_state.get("bottom_window", bottom_window * 100.0)),
+                        "use_robust": bool(st.session_state.get("use_robust", use_robust)),
+                        "robust_q": int(st.session_state.get("robust_q", robust_q)),
+                        "min_stability": float(st.session_state.get("min_stability", min_stability)),
+                        "min_conf_required": float(st.session_state.get("min_conf_required", min_conf_required)),
+                        "allow_quick": bool(st.session_state.get("allow_quick", allow_quick)),
+                        "gemini": {
+                            "enabled": bool(st.session_state.get("use_gemini", use_gemini)),
+                            "style": str(st.session_state.get("personality_style", personality)),
+                            "intensity": int(st.session_state.get("personality_intensity", intensity)),
+                            "llm_available": bool(LLM_AVAILABLE),
+                        },
+                    },
+                    "outputs": {
+                        "coach_driver": st.session_state.get("coach_driver"),
+                        "tip": st.session_state.get("latest_tip"),
+                        "analysis_s3_key": s3_key(run_id, Path(artifacts["analysis_json"]).name, "processed/analysis")
+                        if "analysis_json" in artifacts else None,
+                        "envelope_s3_key": s3_key(run_id, Path(artifacts["envelope_npz"]).name, "processed/envelope")
+                        if "envelope_npz" in artifacts else None,
+                    },
+                }
+
+                manifest_key = f"{cfg['prefix']}/{cfg['user_id']}/{run_id}/manifest.json"
+                s3_put_bytes(
+                    json.dumps(manifest, indent=2).encode("utf-8"),
+                    manifest_key,
+                    content_type="application/json",
+                    metadata={"run_id": run_id, "created_at": run_created_at},
+                )
+
+                st.session_state["saved_to_s3"] = True
+                st.success("Uploaded ✅ Videos + analysis + manifest saved to S3.")
+
+                st.caption("Saved keys:")
+                st.code(
+                    "\n".join(
+                        [
+                            f"s3://{cfg['bucket']}/{coach_key}",
+                            f"s3://{cfg['bucket']}/{user_key}",
+                            f"s3://{cfg['bucket']}/{manifest_key}",
+                        ]
+                    )
+                )
+
+            except NoCredentialsError:
+                st.session_state["s3_last_error"] = "No AWS credentials found."
+                st.error(
+                    "AWS credentials not found. Make sure you ran `aws configure` (or set AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY)."
+                )
+            except ClientError as e:
+                st.session_state["s3_last_error"] = str(e)
+                st.error(f"S3 ClientError: {e}")
+            except Exception as e:
+                st.session_state["s3_last_error"] = str(e)
+                st.error(f"Unexpected error uploading to S3: {type(e).__name__}: {e}")
+
 
 # ----------------------------- Debug -----------------------------
 with st.expander("Debug: App state"):
     st.write(
         {
+            "run_id": st.session_state.get("run_id"),
+            "created_at_utc": st.session_state.get("run_created_at"),
+            "saved_to_s3": st.session_state.get("saved_to_s3"),
+            "s3_last_error": st.session_state.get("s3_last_error"),
             "LLM_AVAILABLE": LLM_AVAILABLE,
             "use_gemini": use_gemini,
             "personality": personality,
@@ -762,6 +1095,7 @@ with st.expander("Debug: App state"):
             "stage2_done": st.session_state["stage2_done"],
             "coach_driver": st.session_state.get("coach_driver"),
             "N": st.session_state.get("N"),
+            "artifacts_local": st.session_state.get("artifacts_local", {}),
         }
     )
     if _llm_err is not None:
