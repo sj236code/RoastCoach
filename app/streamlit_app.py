@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import base64
+import io
 import json
 import os
 import sys
@@ -18,6 +19,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import streamlit as st
+
 
 # Optional S3
 try:
@@ -319,12 +321,199 @@ st.markdown("""
     .main > div {
         animation: fadeIn 0.3s ease-out;
     }
+
+    /* Mobile detection class */
+    .mobile-device {
+        /* Additional mobile-specific styles can be added here */
+    }
+
+    /* Mobile Responsive Styles */
+    @media screen and (max-width: 768px) {
+        /* Stack columns vertically on mobile */
+        [data-testid="column"] {
+            width: 100% !important;
+            margin-bottom: 1rem;
+        }
+
+        /* Adjust typography for mobile */
+        h1 {
+            font-size: 2rem;
+            margin-bottom: 0.5rem;
+        }
+
+        h2 {
+            font-size: 1.25rem;
+            margin-top: 1.5rem;
+            margin-bottom: 0.75rem;
+        }
+
+        h3 {
+            font-size: 1.1rem;
+            margin-top: 1rem;
+            margin-bottom: 0.5rem;
+        }
+
+        p, .stMarkdown p {
+            font-size: 0.9rem;
+            line-height: 1.5;
+        }
+
+        /* Touch-friendly buttons */
+        .stButton > button {
+            min-height: 44px;
+            padding: 0.875rem 1.25rem;
+            font-size: 1rem;
+        }
+
+        /* Full-width containers on mobile */
+        .main > div {
+            max-width: 100%;
+            padding: 1rem;
+        }
+
+        /* Optimize metric cards for mobile */
+        div[data-testid="stMetricContainer"] {
+            padding: 1rem;
+            margin-bottom: 0.75rem;
+        }
+
+        [data-testid="stMetricValue"] {
+            font-size: 1.5rem;
+        }
+
+        [data-testid="stMetricLabel"] {
+            font-size: 0.8rem;
+        }
+
+        /* Stack metric columns */
+        [data-testid="column"] > div {
+            width: 100% !important;
+        }
+
+        /* Optimize file uploader for mobile */
+        .stFileUploader > div {
+            padding: 1rem;
+            min-height: 120px;
+        }
+
+        /* Make radio buttons more touch-friendly */
+        .stRadio > label {
+            padding: 0.5rem;
+            font-size: 0.95rem;
+        }
+
+        /* Optimize video previews */
+        video {
+            max-width: 100% !important;
+            height: auto !important;
+        }
+
+        /* Adjust spacing */
+        .stDivider {
+            margin: 1.5rem 0;
+        }
+
+        /* Make expanders more touch-friendly */
+        div[data-testid="stExpander"] {
+            margin-bottom: 0.75rem;
+        }
+
+        /* Optimize tables for mobile */
+        .dataframe {
+            font-size: 0.85rem;
+            overflow-x: auto;
+            display: block;
+        }
+
+        /* Adjust alert padding */
+        .stSuccess, .stInfo, .stWarning, .stError {
+            padding: 0.75rem;
+            font-size: 0.9rem;
+        }
+
+        /* Make tabs more touch-friendly */
+        .stTabs [data-baseweb="tab"] {
+            padding: 0.75rem 1rem;
+            font-size: 0.95rem;
+        }
+    }
+
+    /* Extra small mobile devices */
+    @media screen and (max-width: 480px) {
+        h1 {
+            font-size: 1.75rem;
+        }
+
+        h2 {
+            font-size: 1.1rem;
+        }
+
+        h3 {
+            font-size: 1rem;
+        }
+
+        .stButton > button {
+            font-size: 0.95rem;
+            padding: 0.75rem 1rem;
+        }
+
+        div[data-testid="stMetricContainer"] {
+            padding: 0.875rem;
+        }
+
+        [data-testid="stMetricValue"] {
+            font-size: 1.25rem;
+        }
+    }
     </style>
 """, unsafe_allow_html=True)
 
 st.title("RoastCoach")
 st.markdown("### Exercise-Agnostic Motion Fingerprinting")
 st.caption("Upload a coach reference video, then a user attempt. We'll compare joint-angle trajectories and provide personalized feedback.")
+
+# Mobile detection and enhancement script
+st.markdown("""
+<script>
+(function() {
+    // Detect mobile device
+    const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+    const isTouchDevice = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+
+    if (isMobile || isTouchDevice) {
+        // Add mobile class to body
+        document.body.classList.add('mobile-device');
+
+        // Enhance touch targets
+        const touchTargets = document.querySelectorAll('button, a, input[type="radio"], input[type="checkbox"]');
+        touchTargets.forEach(target => {
+            if (target.offsetHeight < 44) {
+                target.style.minHeight = '44px';
+                target.style.minWidth = '44px';
+            }
+        });
+
+        // Optimize video elements for mobile
+        const videos = document.querySelectorAll('video');
+        videos.forEach(video => {
+            video.setAttribute('playsinline', '');
+            video.setAttribute('webkit-playsinline', '');
+        });
+
+        // Prevent zoom on input focus (iOS)
+        const inputs = document.querySelectorAll('input, textarea, select');
+        inputs.forEach(input => {
+            if (input.style.fontSize === '') {
+                input.style.fontSize = '16px'; // Prevents iOS zoom
+            }
+        });
+    }
+
+    // Store mobile status in sessionStorage for Python access
+    sessionStorage.setItem('isMobile', isMobile || isTouchDevice ? 'true' : 'false');
+})();
+</script>
+""", unsafe_allow_html=True)
 
 
 # ----------------------------- Paths -----------------------------
@@ -405,6 +594,8 @@ def ss_init():
         "s3_last_error": None,
         "artifacts_local": {},  # file paths for this run (filled after analysis)
         "exercise_label": "",
+        # video naming
+        "user_video_name": None,  # Custom name for user video (optional)
         # processing flags
         "processing_complete": False,
         "summary_generated": False,
@@ -952,6 +1143,58 @@ def s3_client():
     return boto3.client("s3", region_name=cfg["region"])
 
 
+def sanitize_video_name(name: str, original_filename: str) -> str:
+    """
+    Sanitize video name for filesystem and S3 compatibility.
+
+    Args:
+        name: Custom name provided by user (can be empty)
+        original_filename: Original filename from upload
+
+    Returns:
+        Sanitized filename with proper extension
+    """
+    import re
+
+    # Get extension from original filename
+    original_path = Path(original_filename)
+    ext = original_path.suffix.lower()
+
+    # If no custom name provided, use original filename (without path)
+    if not name or not name.strip():
+        return original_path.name
+
+    # Sanitize the custom name
+    sanitized = name.strip()
+
+    # Remove/replace invalid characters for filesystem and S3
+    # S3 key restrictions: alphanumeric, forward slash, hyphen, underscore, period
+    # Filesystem: avoid special chars that cause issues
+    sanitized = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', sanitized)
+
+    # Replace multiple underscores/spaces with single underscore
+    sanitized = re.sub(r'[_\s]+', '_', sanitized)
+
+    # Remove leading/trailing dots and underscores
+    sanitized = sanitized.strip('._')
+
+    # Limit length (S3 key length limit is 1024, but keep filename reasonable)
+    # Reserve space for extension and path
+    max_name_length = 200
+    if len(sanitized) > max_name_length:
+        sanitized = sanitized[:max_name_length].rstrip('._')
+
+    # Ensure we have a name after sanitization
+    if not sanitized:
+        sanitized = original_path.stem
+
+    # Add extension if not present
+    if not sanitized.endswith(ext):
+        sanitized += ext
+
+    return sanitized
+
+
 def s3_key(run_id: str, filename: str, kind: str) -> str:
     """
     kind examples:
@@ -1112,7 +1355,95 @@ with tab_run:
         coach_file = st.file_uploader("Upload coach demo (.mp4/.mov/.m4v)", type=["mp4", "mov", "m4v"], key="coach")
     with col2:
         st.subheader("2) User Attempt Video")
-        user_file = st.file_uploader("Upload user attempt (.mp4/.mov/.m4v)", type=["mp4", "mov", "m4v"], key="user")
+        # Toggle between upload and record for user video
+        user_mode = st.radio(
+            "Choose input method:",
+            ["Upload Video", "Record Video"],
+            horizontal=True,
+            key="user_video_mode"
+        )
+
+        if user_mode == "Upload Video":
+            user_file = st.file_uploader("Upload user attempt (.mp4/.mov/.m4v)", type=["mp4", "mov", "m4v"], key="user")
+        else:
+            # Mobile video recording - enhanced file uploader with capture attribute
+            st.markdown("**Record Video (Mobile)**")
+            st.caption("On mobile devices, this will open your camera to record directly")
+            user_file = st.file_uploader(
+                "Record or upload video (.mp4/.mov/.m4v)",
+                type=["mp4", "mov", "m4v"],
+                key="user_record",
+                help="Tap to record a video using your device camera (mobile) or upload a file"
+            )
+
+            # Add JavaScript to enhance the file uploader with capture attribute on mobile
+            st.markdown("""
+            <script>
+            (function() {
+                function enhanceFileUploader() {
+                    // Find the file uploader input for user_record
+                    const fileInputs = document.querySelectorAll('input[type="file"]');
+                    fileInputs.forEach(input => {
+                        // Check if this is a video input
+                        if (input.accept && (input.accept.includes('video') || input.accept.includes('mp4') || input.accept.includes('mov'))) {
+                            // Check if mobile device
+                            const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+                            if (isMobile && !input.hasAttribute('capture')) {
+                                input.setAttribute('capture', 'environment');
+                                input.setAttribute('accept', 'video/*');
+                            }
+                        }
+                    });
+                }
+
+                // Run on page load
+                if (document.readyState === 'loading') {
+                    document.addEventListener('DOMContentLoaded', enhanceFileUploader);
+                } else {
+                    enhanceFileUploader();
+                }
+
+                // Also run after Streamlit reruns (observe mutations)
+                const observer = new MutationObserver(enhanceFileUploader);
+                observer.observe(document.body, { childList: true, subtree: true });
+            })();
+            </script>
+            """, unsafe_allow_html=True)
+
+        # Video naming (after upload)
+        if user_file:
+            st.markdown("**Name Your Video (Optional)**")
+            st.caption("Give your video a custom name for easier identification in AWS storage")
+
+            # Get original filename
+            original_filename = user_file.name
+
+            # Initialize video name if not set or if file changed
+            if st.session_state.get("user_video_name") is None or st.session_state.get("user_file_sig") != file_signature(user_file)[1]:
+                # Default to original filename without extension
+                default_name = Path(original_filename).stem
+                st.session_state["user_video_name"] = default_name
+
+            # Video name input
+            video_name_input = st.text_input(
+                "Video Name:",
+                value=st.session_state.get("user_video_name", Path(original_filename).stem),
+                key="user_video_name_input",
+                help="Custom name for your video. Will be sanitized for filesystem compatibility.",
+                placeholder="e.g., My_Squat_Attempt_1"
+            )
+
+            # Update session state with sanitized name
+            if video_name_input:
+                sanitized_name = sanitize_video_name(video_name_input, original_filename)
+                st.session_state["user_video_name"] = sanitized_name
+
+                # Show preview of sanitized name if it changed
+                if sanitized_name != video_name_input:
+                    st.caption(f"Sanitized name: `{sanitized_name}`")
+            else:
+                # Use original filename if empty
+                st.session_state["user_video_name"] = original_filename
 
     # Reset stages only when videos change
     if coach_file and user_file:
@@ -1181,7 +1512,17 @@ with tab_run:
             try:
                 cfg = s3_config()
                 coach_key = s3_key(run_id, coach_path.name, "raw/coach_video")
-                user_key = s3_key(run_id, user_path.name, "raw/user_video")
+
+                # Use custom video name if provided, otherwise use original filename
+                user_video_filename = user_path.name
+                if st.session_state.get("user_video_name"):
+                    # Ensure the custom name has the correct extension
+                    custom_name = st.session_state["user_video_name"]
+                    if not custom_name.endswith(Path(user_path.name).suffix):
+                        custom_name = sanitize_video_name(custom_name, user_path.name)
+                    user_video_filename = custom_name
+
+                user_key = s3_key(run_id, user_video_filename, "raw/user_video")
 
                 s3_put_file(
                     coach_path,
@@ -1189,11 +1530,24 @@ with tab_run:
                     content_type=guess_video_content_type(coach_path),
                     metadata={"run_id": run_id, "role": "coach", "created_at": iso_ts},
                 )
+                # Prepare metadata with custom video name
+                user_metadata = {
+                    "run_id": run_id,
+                    "role": "user",
+                    "created_at": iso_ts,
+                    "original_filename": user_path.name,
+                }
+                if st.session_state.get("user_video_name") and st.session_state["user_video_name"] != user_path.name:
+                    user_metadata["video_name"] = st.session_state["user_video_name"]
+                    user_metadata["custom_name"] = "true"
+                else:
+                    user_metadata["custom_name"] = "false"
+
                 s3_put_file(
                     user_path,
                     user_key,
                     content_type=guess_video_content_type(user_path),
-                    metadata={"run_id": run_id, "role": "user", "created_at": iso_ts},
+                    metadata=user_metadata,
                 )
 
                 st.session_state["coach_video_s3_key"] = coach_key
@@ -1273,53 +1627,54 @@ with tab_run:
             st.stop()
 
         # ----------------------------- Stage 2: Auto-trigger -----------------------------
-        st.info("Processing Stage 2: Rep segmentation + normalization...")
+        if should_process and not st.session_state.get("stage2_done", False):
+            st.info("Processing Stage 2: Rep segmentation + normalization...")
 
-        # Use default settings for auto-processing
-        min_q = st.session_state.get("min_q", 0.35)
-        drop_first = st.session_state.get("drop_first", True)
-        N = int(st.session_state.get("N", 100))
+            # Use default settings for auto-processing
+            min_q = st.session_state.get("min_q", 0.35)
+            drop_first = st.session_state.get("drop_first", True)
+            N = int(st.session_state.get("N", 100))
 
-        coach_driver = choose_driver_column(df_coach)
-        user_driver = coach_driver
+            coach_driver = choose_driver_column(df_coach)
+            user_driver = coach_driver
 
-        coach_reps_raw, coach_driver_smooth = find_reps_from_driver(df_coach, coach_driver)
-        user_reps_raw, user_driver_smooth = find_reps_from_driver(df_user, user_driver)
+            coach_reps_raw, coach_driver_smooth = find_reps_from_driver(df_coach, coach_driver)
+            user_reps_raw, user_driver_smooth = find_reps_from_driver(df_user, user_driver)
 
-        coach_reps = filter_reps(coach_reps_raw, min_quality=min_q, drop_first=drop_first)
-        user_reps = filter_reps(user_reps_raw, min_quality=min_q, drop_first=drop_first)
+            coach_reps = filter_reps(coach_reps_raw, min_quality=min_q, drop_first=drop_first)
+            user_reps = filter_reps(user_reps_raw, min_quality=min_q, drop_first=drop_first)
 
-        if not (coach_reps and user_reps):
-            st.error("Not enough reps kept after filtering. Try adjusting video quality or settings.")
-            st.stop()
+            if not (coach_reps and user_reps):
+                st.error("Not enough reps kept after filtering. Try adjusting video quality or settings.")
+                st.stop()
 
-        angle_cols = shared_cols
-        tt = np.linspace(0, 1, int(N))
+            angle_cols = shared_cols
+            tt = np.linspace(0, 1, int(N))
 
-        coach_mean, coach_std, coach_stack = mean_std_normalized_rep(df_coach, coach_reps, angle_cols, N=int(N))
-        user_mean, user_std, user_stack = mean_std_normalized_rep(df_user, user_reps, angle_cols, N=int(N))
+            coach_mean, coach_std, coach_stack = mean_std_normalized_rep(df_coach, coach_reps, angle_cols, N=int(N))
+            user_mean, user_std, user_stack = mean_std_normalized_rep(df_user, user_reps, angle_cols, N=int(N))
 
-        st.session_state.update(
-            {
-                "coach_driver": coach_driver,
-                "coach_reps": coach_reps,
-                "user_reps": user_reps,
-                "coach_driver_smooth": coach_driver_smooth,
-                "user_driver_smooth": user_driver_smooth,
-                "angle_cols": angle_cols,
-                "N": int(N),
-                "tt": tt,
-                "coach_mean": coach_mean,
-                "coach_std": coach_std,
-                "coach_stack": coach_stack,
-                "user_mean": user_mean,
-                "user_std": user_std,
-                "user_stack": user_stack,
-                "stage2_done": True,
-            }
-        )
+            st.session_state.update(
+                {
+                    "coach_driver": coach_driver,
+                    "coach_reps": coach_reps,
+                    "user_reps": user_reps,
+                    "coach_driver_smooth": coach_driver_smooth,
+                    "user_driver_smooth": user_driver_smooth,
+                    "angle_cols": angle_cols,
+                    "N": int(N),
+                    "tt": tt,
+                    "coach_mean": coach_mean,
+                    "coach_std": coach_std,
+                    "coach_stack": coach_stack,
+                    "user_mean": user_mean,
+                    "user_std": user_std,
+                    "user_stack": user_stack,
+                    "stage2_done": True,
+                }
+            )
 
-        st.success("Stage 2 complete: Reference envelope built")
+            st.success("Stage 2 complete: Reference envelope built")
 
     # Continue to Stage 3 if Stage 2 is done
     if st.session_state.get("stage2_done", False) and not st.session_state.get("processing_complete", False):
@@ -1678,7 +2033,16 @@ with tab_run:
 
                     # Videos may already be uploaded, use stored keys or upload
                     coach_key = st.session_state.get("coach_video_s3_key") or s3_key(run_id, coach_path.name, "raw/coach_video")
-                    user_key = st.session_state.get("user_video_s3_key") or s3_key(run_id, user_path.name, "raw/user_video")
+
+                    # Use custom video name if provided for user video
+                    user_video_filename = user_path.name
+                    if st.session_state.get("user_video_name"):
+                        custom_name = st.session_state["user_video_name"]
+                        if not custom_name.endswith(Path(user_path.name).suffix):
+                            custom_name = sanitize_video_name(custom_name, user_path.name)
+                        user_video_filename = custom_name
+
+                    user_key = st.session_state.get("user_video_s3_key") or s3_key(run_id, user_video_filename, "raw/user_video")
 
                     # Upload videos if not already uploaded
                     if not st.session_state.get("coach_video_s3_key"):
@@ -1691,11 +2055,24 @@ with tab_run:
                         st.session_state["coach_video_s3_key"] = coach_key
 
                     if not st.session_state.get("user_video_s3_key"):
+                        # Prepare metadata with custom video name
+                        user_metadata = {
+                            "run_id": run_id,
+                            "role": "user",
+                            "created_at": run_created_at,
+                            "original_filename": user_path.name,
+                        }
+                        if st.session_state.get("user_video_name") and st.session_state["user_video_name"] != user_path.name:
+                            user_metadata["video_name"] = st.session_state["user_video_name"]
+                            user_metadata["custom_name"] = "true"
+                        else:
+                            user_metadata["custom_name"] = "false"
+
                         s3_put_file(
                             user_path,
                             user_key,
                             content_type=guess_video_content_type(user_path),
-                            metadata={"run_id": run_id, "role": "user", "created_at": run_created_at},
+                            metadata=user_metadata,
                         )
                         st.session_state["user_video_s3_key"] = user_key
 
@@ -1728,6 +2105,8 @@ with tab_run:
                             "user_video_s3_key": user_key,
                             "coach_video_local": str(coach_path),
                             "user_video_local": str(user_path),
+                            "user_video_name": st.session_state.get("user_video_name") or user_path.name,
+                            "user_video_original_filename": user_path.name,
                         },
                         "settings": {
                             "min_q": float(st.session_state.get("min_q", 0.35)),
