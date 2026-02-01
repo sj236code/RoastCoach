@@ -71,7 +71,12 @@ def conf_summary(df: pd.DataFrame) -> str:
     good = np.isfinite(c)
     if good.sum() == 0:
         return "conf: n/a"
-    return f"conf mean={np.nanmean(c):.2f}, p10={np.nanpercentile(c,10):.2f}, p50={np.nanpercentile(c,50):.2f}, p90={np.nanpercentile(c,90):.2f}"
+    return (
+        f"conf mean={np.nanmean(c):.2f}, "
+        f"p10={np.nanpercentile(c,10):.2f}, "
+        f"p50={np.nanpercentile(c,50):.2f}, "
+        f"p90={np.nanpercentile(c,90):.2f}"
+    )
 
 
 def phase_from_t(idx_peak: int, idx_bottom: int, N: int, bottom_window_frac: float = 0.08) -> str:
@@ -96,14 +101,122 @@ def severity_from_deg(deg_outside: float, mild=5.0, moderate=12.0, severe=20.0) 
     return "none"
 
 
-def make_tip_from_events(events, stability, confidence, min_stability=0.6, min_conf=0.6) -> dict:
-    """Constrained, safe coaching tip (no LLM)."""
-    if stability < min_stability or confidence < min_conf:
+# -------------------- NEW: safer coaching cue logic --------------------
+def _event_priority(e: dict) -> tuple:
+    """
+    Higher is better. Sort by:
+    1) severity rank
+    2) persistence label (persistent > brief)
+    3) persistence fraction
+    4) degrees outside
+    """
+    sev_rank = {"severe": 3, "moderate": 2, "mild": 1, "none": 0}
+    pers_rank = 1 if e.get("persistence_label") == "persistent" else 0
+    return (
+        sev_rank.get(e.get("severity", "none"), 0),
+        pers_rank,
+        float(e.get("persistence", 0.0)),
+        float(e.get("deg_outside", 0.0)),
+    )
+
+
+def _event_to_tip(e: dict) -> dict:
+    """
+    Convert event to a human coaching cue that matches your angle conventions:
+      - knee/elbow angles are interior angles: smaller = more bend, larger = straighter
+      - trunk_incline: larger = more forward lean
+    """
+    joint = e.get("joint", "n/a")
+    phase = e.get("phase", "n/a")
+    direction = e.get("direction", "")
+
+    j = joint.lower()
+
+    if "knee_flex" in j or "elbow_flex" in j:
+        # interior angle: above_reference => too straight (not enough bend)
+        if direction == "above_reference":
+            msg = f"Bend your {joint.replace('_', ' ')} more during {phase}."
+        elif direction == "below_reference":
+            msg = f"Bend your {joint.replace('_', ' ')} less during {phase}."
+        else:
+            msg = f"Keep your {joint.replace('_', ' ')} steadier during {phase}."
+
+    elif "trunk_incline" in j:
+        # trunk_incline is angle from vertical: above_reference => leaning too far forward
+        if direction == "above_reference":
+            msg = f"Stay more upright during {phase}."
+        elif direction == "below_reference":
+            msg = f"Lean slightly more forward during {phase}."
+        else:
+            msg = f"Keep your torso steadier during {phase}."
+    else:
+        # fallback
+        if direction == "below_reference":
+            msg = f"Increase {joint} motion during {phase}."
+        elif direction == "above_reference":
+            msg = f"Reduce {joint} motion during {phase}."
+        else:
+            msg = f"Keep {joint} steadier during {phase}."
+
+    # <= 20 words hard cap
+    words = msg.split()
+    if len(words) > 20:
+        msg = " ".join(words[:20])
+
+    return {"one_sentence_tip": msg, "target_joint": joint, "phase": phase}
+
+
+def focus_joints_from_driver(driver: str, angle_cols: list[str]) -> list[str]:
+    """
+    Focus only on joints that actually exist in angle_cols.
+    With current angles.py, the only possible joints are:
+      - left/right_knee_flex
+      - left/right_elbow_flex
+      - trunk_incline
+    """
+    d = driver.lower()
+
+    if "knee" in d:
+        focus = ["left_knee_flex", "right_knee_flex", "trunk_incline"]
+    elif "elbow" in d:
+        focus = ["left_elbow_flex", "right_elbow_flex", "trunk_incline"]
+    elif "trunk" in d:
+        focus = ["trunk_incline", "left_knee_flex", "right_knee_flex"]
+    else:
+        focus = [driver, "trunk_incline"]
+
+    focus = [j for j in focus if j in angle_cols]
+
+    if driver in angle_cols and driver not in focus:
+        focus.insert(0, driver)
+
+    return focus
+
+
+def make_tip_from_events(
+    events,
+    stability,
+    confidence,
+    min_stability=0.6,
+    min_conf=0.6,
+    allow_quick_mode=True,
+) -> dict:
+    """
+    Constrained, safe coaching tip (no LLM).
+
+    NEW POLICY:
+    - Hard gate only on confidence (tracking quality).
+    - If stability is low, still coach in "quick mode" using top event
+      (but UI can warn that reference is unstable).
+    """
+    # HARD GATE: low confidence => re-record
+    if confidence < min_conf:
         return {
-            "one_sentence_tip": "Re-record: keep your whole body in frame and do 3–5 consistent reps.",
+            "one_sentence_tip": "Re-record: keep your whole body in frame with good lighting and steady camera.",
             "target_joint": "n/a",
             "phase": "n/a",
         }
+
     if not events:
         return {
             "one_sentence_tip": "Nice work—your motion stayed within the coach envelope for the main joints.",
@@ -111,30 +224,19 @@ def make_tip_from_events(events, stability, confidence, min_stability=0.6, min_c
             "phase": "n/a",
         }
 
-    sev_rank = {"severe": 3, "moderate": 2, "mild": 1}
-    events_sorted = sorted(
-        events,
-        key=lambda e: (sev_rank.get(e["severity"], 0), e["deg_outside"], e["persistence"]),
-        reverse=True,
-    )
-    e = events_sorted[0]
-    joint = e["joint"]
-    phase = e["phase"]
+    # If stability is low, we still coach (quick mode) if allowed
+    if stability < min_stability and not allow_quick_mode:
+        return {
+            "one_sentence_tip": "Re-record: do 3–5 consistent coach reps so the reference envelope is stable.",
+            "target_joint": "n/a",
+            "phase": "n/a",
+        }
 
-    # Keep it kinematics-only and short
-    if e["direction"] == "below_reference":
-        msg = f"Try increasing {joint} motion during {phase} to match the coach."
-    elif e["direction"] == "above_reference":
-        msg = f"Try reducing {joint} motion during {phase} to match the coach."
-    else:
-        msg = f"Keep {joint} steadier during {phase}."
-
-    # <= 20 words
-    words = msg.split()
-    if len(words) > 20:
-        msg = " ".join(words[:20])
-
-    return {"one_sentence_tip": msg, "target_joint": joint, "phase": phase}
+    # Choose top event
+    events_sorted = sorted(events, key=_event_priority, reverse=True)
+    best = events_sorted[0]
+    return _event_to_tip(best)
+# ----------------------------------------------------------------------
 
 
 # ---------- Import backend pipeline (pose -> angles -> segmentation) ----------
@@ -268,7 +370,7 @@ if run:
     st.subheader("Rep Segmentation")
 
     coach_driver = choose_driver_column(df_coach)
-    user_driver = coach_driver  # force same driver for consistent comparisons
+    user_driver = coach_driver
 
     st.write(f"Coach driver: `{coach_driver}`")
     st.write(f"User driver (forced): `{user_driver}`")
@@ -341,7 +443,7 @@ if run:
     plt.legend()
     st.pyplot(fig3)
 
-    # ---------- NEW: Reference Envelope Builder (Coach) ----------
+    # ---------- Reference Envelope Builder (Coach) ----------
     st.divider()
     st.subheader("Reference Envelope (Coach) + Stability")
 
@@ -362,7 +464,7 @@ if run:
     st.write(f"Reference stability (proxy): **{stability:.2f}**")
     min_stability = st.slider("Warn if stability < ", 0.1, 1.0, 0.6, 0.05)
     if stability < min_stability:
-        st.warning("Coach reps vary a lot. Envelope may be wide (still continuing).")
+        st.warning("Coach reps vary a lot (or you have few reps). We'll still coach in Quick Mode.")
 
     # Visualize envelope for selected joint
     fig_env = plt.figure()
@@ -388,7 +490,7 @@ if run:
     )
     st.caption(f"Saved envelope: `{env_path}`")
 
-    # ---------- NEW: Deviation Detection (rep-by-rep) ----------
+    # ---------- Deviation Detection ----------
     st.divider()
     st.subheader("Deviation Detection (User reps vs Coach envelope)")
 
@@ -404,19 +506,21 @@ if run:
     for ridx, r in enumerate(user_reps):
         user_mat = resample_rep_angles(df_user, r, angle_cols, N=N)  # (N, J)
 
-        # find "bottom" using driver joint (min flex angle per your definition)
         idx_bottom = int(np.nanargmin(user_mat[:, driver_idx]))
 
-        # pointwise outside envelope
         below = ref_lo - user_mat
         above = user_mat - ref_hi
         over = np.maximum(0.0, np.maximum(below, above))  # (N, J)
 
-        max_over = np.nanmax(over, axis=0)  # (J,)
-        persist = np.nanmean(over > 0, axis=0)  # (J,)
+        max_over = np.nanmax(over, axis=0)
+        persist = np.nanmean(over > 0, axis=0)
 
-        # top-3 joints by max outside
-        top_idx = np.argsort(max_over)[::-1][:3]
+        focus_cols = focus_joints_from_driver(coach_driver, angle_cols)
+        focus_idx = [angle_cols.index(c) for c in focus_cols]
+
+        # rank only within focus joints
+        ranked_focus = sorted(focus_idx, key=lambda jj: (max_over[jj], persist[jj]), reverse=True)
+        top_idx = ranked_focus[:3]
 
         events = []
         for jj in top_idx:
@@ -441,7 +545,6 @@ if run:
                 "persistence_label": "persistent" if float(persist[jj]) >= persistent_thresh else "brief",
             })
 
-        # confidence = pose mean conf + rep quality
         pose_conf = float(np.nanmean(df_user["conf"])) if "conf" in df_user.columns else 1.0
         rep_conf = float(np.clip(r.quality, 0.0, 1.0))
         confidence = float(0.5 * pose_conf + 0.5 * rep_conf)
@@ -457,12 +560,11 @@ if run:
     with st.expander("Preview analysis JSON (first 2 reps)"):
         st.json(analyses[:2])
 
-    # Save analysis artifact
     analysis_path = DATA_PROCESSED / "analysis.json"
     analysis_path.write_text(json.dumps(analyses, indent=2))
     st.caption(f"Saved analysis: `{analysis_path}`")
 
-    # ---------- NEW: One-sentence coaching cue ----------
+    # ---------- One-sentence coaching cue ----------
     st.divider()
     st.subheader("Coaching cue (constrained, no LLM yet)")
 
@@ -470,12 +572,17 @@ if run:
     rep_pick = st.selectbox("Choose rep to coach", options=list(range(len(analyses))), index=0)
 
     chosen = analyses[rep_pick]
+
+    # NEW toggle
+    allow_quick = st.checkbox("Allow Quick Mode when stability is low", value=True)
+
     tip = make_tip_from_events(
         chosen["events"],
         stability=chosen["reference_stability"],
         confidence=chosen["confidence"],
         min_stability=min_stability,
         min_conf=min_conf_required,
+        allow_quick_mode=allow_quick,
     )
 
     st.success(tip["one_sentence_tip"])
