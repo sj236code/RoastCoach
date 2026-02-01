@@ -11,7 +11,7 @@ import json
 import os
 import sys
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
@@ -20,6 +20,17 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
+# Load environment variables from .env file
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    # dotenv not installed, continue without it - will use system environment variables
+    pass
+except Exception as e:
+    # If .env loading fails, continue - might use system env vars
+    import warnings
+    warnings.warn(f"Could not load .env file: {e}")
 
 # Optional S3
 try:
@@ -464,6 +475,90 @@ st.markdown("""
         [data-testid="stMetricValue"] {
             font-size: 1.25rem;
         }
+    }
+
+    /* History tab - Video card styling (real estate app aesthetic) */
+    .history-video-card {
+        background: #252525;
+        border-radius: 12px;
+        padding: 0;
+        margin: 1rem 0;
+        border: 1px solid #333333;
+        overflow: hidden;
+        position: relative;
+    }
+
+    .history-video-card img {
+        width: 100%;
+        height: auto;
+        display: block;
+        border-radius: 12px 12px 0 0;
+    }
+
+    .history-stat-card {
+        background: #252525;
+        border-radius: 12px;
+        padding: 1.5rem;
+        margin: 1rem 0;
+        border: 1px solid #333333;
+    }
+
+    .history-stat-card h3 {
+        color: #ffffff;
+        margin-top: 0;
+        margin-bottom: 0.5rem;
+    }
+
+    .history-stat-card h4 {
+        color: #e5e5e5;
+        margin-top: 1.5rem;
+        margin-bottom: 1rem;
+        font-size: 1.1rem;
+    }
+
+    .history-progress {
+        text-align: center;
+        color: #9a9a9a;
+        font-size: 0.95rem;
+        font-weight: 500;
+        margin: 1rem 0;
+        padding: 0.75rem;
+        background: #252525;
+        border-radius: 8px;
+        border: 1px solid #333333;
+    }
+
+    /* Navigation buttons styling */
+    .stButton > button[kind="secondary"] {
+        background: #2a2a2a;
+        border: 1px solid #404040;
+        color: #ffffff;
+        font-size: 1.2rem;
+        padding: 0.5rem 1rem;
+        min-width: 60px;
+    }
+
+    .stButton > button[kind="secondary"]:hover:not(:disabled) {
+        background: #353535;
+        border-color: #4a4a4a;
+        transform: translateY(-1px);
+    }
+
+    .stButton > button[kind="secondary"]:disabled {
+        opacity: 0.3;
+        cursor: not-allowed;
+    }
+
+    /* Video selector styling */
+    .stSelectbox > div > div {
+        background: #252525;
+        border: 1px solid #333333;
+        color: #e5e5e5;
+    }
+
+    .stSelectbox > div > div:hover {
+        border-color: #404040;
+        background: #2a2a2a;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -1123,8 +1218,11 @@ def cached_angles(frames):
 
 # ----------------------------- S3 helpers -----------------------------
 def s3_config() -> Dict[str, str]:
+    bucket_name = os.getenv("ROASTCOACH_S3_BUCKET", "").strip()
+    if not bucket_name:
+        bucket_name = os.getenv("S3_BUCKET_NAME", "").strip()
     return {
-        "bucket": os.getenv("ROASTCOACH_S3_BUCKET", "").strip(),
+        "bucket": bucket_name,
         "region": os.getenv("AWS_REGION", os.getenv("AWS_DEFAULT_REGION", "us-east-1")).strip(),
         "prefix": os.getenv("ROASTCOACH_S3_PREFIX", "roastcoach").strip().strip("/"),
         "user_id": os.getenv("ROASTCOACH_USER_ID", "anonymous").strip() or "anonymous",
@@ -1215,8 +1313,14 @@ def s3_put_file(local_path: Path, key: str, content_type: str | None = None, met
         extra["ContentType"] = content_type
     if metadata:
         extra["Metadata"] = {str(k).lower(): str(v) for k, v in metadata.items()}
-    with local_path.open("rb") as f:
-        cli.put_object(Bucket=s3_config()["bucket"], Key=key, Body=f, **extra)
+    try:
+        with local_path.open("rb") as f:
+            cli.put_object(Bucket=s3_config()["bucket"], Key=key, Body=f, **extra)
+    except ClientError as e:
+        # Re-raise ClientError directly so it can be caught properly by upload handlers
+        raise
+    except Exception as e:
+        raise Exception(f"Failed to upload to S3: {str(e)}")
 
 
 def s3_put_bytes(data: bytes, key: str, content_type: str | None = None, metadata: Dict[str, str] | None = None):
@@ -1226,7 +1330,13 @@ def s3_put_bytes(data: bytes, key: str, content_type: str | None = None, metadat
         extra["ContentType"] = content_type
     if metadata:
         extra["Metadata"] = {str(k).lower(): str(v) for k, v in metadata.items()}
-    cli.put_object(Bucket=s3_config()["bucket"], Key=key, Body=data, **extra)
+    try:
+        cli.put_object(Bucket=s3_config()["bucket"], Key=key, Body=data, **extra)
+    except ClientError as e:
+        # Re-raise ClientError directly so it can be caught properly by upload handlers
+        raise
+    except Exception as e:
+        raise Exception(f"Failed to upload to S3: {str(e)}")
 
 
 @st.cache_data(ttl=30, show_spinner=False)
@@ -1553,8 +1663,111 @@ with tab_run:
                 st.session_state["coach_video_s3_key"] = coach_key
                 st.session_state["user_video_s3_key"] = user_key
                 st.success("Videos uploaded to S3")
+            except ClientError as e:
+                error_code = e.response.get("Error", {}).get("Code", "Unknown")
+                error_message = e.response.get("Error", {}).get("Message", str(e))
+
+                st.error(f"❌ **S3 Upload Error**")
+                if error_code == "AccessDenied":
+                    st.error(f"Access Denied: Your AWS credentials don't have permission to upload objects to bucket '{cfg['bucket']}'. Please ensure your IAM user has the 's3:PutObject' permission for this bucket.")
+
+                    st.warning("⚠️ **Video processing will continue locally, but S3 upload failed.**")
+                    st.info("💡 **How to fix this in AWS Console:**")
+
+                    with st.expander("📋 **Step-by-Step Instructions**", expanded=True):
+                        st.markdown("""
+                        **Step 1:** Go to [AWS IAM Console](https://console.aws.amazon.com/iam/) and sign in.
+
+                        **Step 2:** Click on "Users" in the left sidebar, then find and click on your IAM user (`daniel-aws`).
+
+                        **Step 3:** Click on the "Permissions" tab, then click "Add permissions" → "Create inline policy".
+
+                        **Step 4:** Click on the "JSON" tab and paste this policy:
+                        """)
+
+                        bucket_name = cfg["bucket"]
+                        policy_json = f'''{{
+    "Version": "2012-10-17",
+    "Statement": [
+        {{
+            "Effect": "Allow",
+            "Action": [
+                "s3:ListBucket",
+                "s3:GetObject",
+                "s3:PutObject"
+            ],
+            "Resource": [
+                "arn:aws:s3:::{bucket_name}",
+                "arn:aws:s3:::{bucket_name}/*"
+            ]
+        }}
+    ]
+}}'''
+
+                        st.code(policy_json, language="json")
+
+                        st.markdown("""
+                        **Step 5:** Click "Next", give the policy a name (e.g., `RoastCoachS3Access`), then click "Create policy".
+
+                        **Step 6:** Wait a few seconds for the policy to propagate, then try uploading again.
+                        """)
+                else:
+                    st.error(f"AWS Error ({error_code}): {error_message}")
+                    st.info("💡 Check your AWS credentials and bucket configuration in the `.env` file.")
             except Exception as e:
-                st.warning(f"Video upload to S3 failed: {e}")
+                error_str = str(e)
+                if "AWS S3 Error" in error_str and "AccessDenied" in error_str:
+                    # Show full instructions for AccessDenied errors
+                    st.error(f"❌ **S3 Upload Error**")
+                    st.error(f"Access Denied: Your AWS credentials don't have permission to upload objects to bucket '{cfg['bucket']}'. Please ensure your IAM user has the 's3:PutObject' permission for this bucket.")
+
+                    st.warning("⚠️ **Video processing will continue locally, but S3 upload failed.**")
+                    st.info("💡 **How to fix this in AWS Console:**")
+
+                    with st.expander("📋 **Step-by-Step Instructions**", expanded=True):
+                        st.markdown("""
+                        **Step 1:** Go to [AWS IAM Console](https://console.aws.amazon.com/iam/) and sign in.
+
+                        **Step 2:** Click on "Users" in the left sidebar, then find and click on your IAM user (`daniel-aws`).
+
+                        **Step 3:** Click on the "Permissions" tab, then click "Add permissions" → "Create inline policy".
+
+                        **Step 4:** Click on the "JSON" tab and paste this policy:
+                        """)
+
+                        bucket_name = cfg["bucket"]
+                        policy_json = f'''{{
+    "Version": "2012-10-17",
+    "Statement": [
+        {{
+            "Effect": "Allow",
+            "Action": [
+                "s3:ListBucket",
+                "s3:GetObject",
+                "s3:PutObject"
+            ],
+            "Resource": [
+                "arn:aws:s3:::{bucket_name}",
+                "arn:aws:s3:::{bucket_name}/*"
+            ]
+        }}
+    ]
+}}'''
+
+                        st.code(policy_json, language="json")
+
+                        st.markdown("""
+                        **Step 5:** Click "Next", give the policy a name (e.g., `RoastCoachS3Access`), then click "Create policy".
+
+                        **Step 6:** Wait a few seconds for the policy to propagate, then try uploading again.
+                        """)
+                elif "AWS S3 Error" in error_str or "AccessDenied" in error_str:
+                    st.error(f"❌ **S3 Upload Error**")
+                    st.error(error_str)
+                    st.info("💡 Check your AWS IAM permissions. You need `s3:PutObject` permission for the bucket.")
+                else:
+                    st.warning(f"Video upload to S3 failed: {error_str}")
+                    st.info("💡 Videos are still saved locally and processing will continue.")
 
         # Reset stage flags to trigger processing
         st.session_state["stage1_done"] = False
@@ -1630,51 +1843,51 @@ with tab_run:
         if should_process and not st.session_state.get("stage2_done", False):
             st.info("Processing Stage 2: Rep segmentation + normalization...")
 
-            # Use default settings for auto-processing
-            min_q = st.session_state.get("min_q", 0.35)
-            drop_first = st.session_state.get("drop_first", True)
-            N = int(st.session_state.get("N", 100))
+        # Use default settings for auto-processing
+        min_q = st.session_state.get("min_q", 0.35)
+        drop_first = st.session_state.get("drop_first", True)
+        N = int(st.session_state.get("N", 100))
 
-            coach_driver = choose_driver_column(df_coach)
-            user_driver = coach_driver
+        coach_driver = choose_driver_column(df_coach)
+        user_driver = coach_driver
 
-            coach_reps_raw, coach_driver_smooth = find_reps_from_driver(df_coach, coach_driver)
-            user_reps_raw, user_driver_smooth = find_reps_from_driver(df_user, user_driver)
+        coach_reps_raw, coach_driver_smooth = find_reps_from_driver(df_coach, coach_driver)
+        user_reps_raw, user_driver_smooth = find_reps_from_driver(df_user, user_driver)
 
-            coach_reps = filter_reps(coach_reps_raw, min_quality=min_q, drop_first=drop_first)
-            user_reps = filter_reps(user_reps_raw, min_quality=min_q, drop_first=drop_first)
+        coach_reps = filter_reps(coach_reps_raw, min_quality=min_q, drop_first=drop_first)
+        user_reps = filter_reps(user_reps_raw, min_quality=min_q, drop_first=drop_first)
 
-            if not (coach_reps and user_reps):
-                st.error("Not enough reps kept after filtering. Try adjusting video quality or settings.")
-                st.stop()
+        if not (coach_reps and user_reps):
+            st.error("Not enough reps kept after filtering. Try adjusting video quality or settings.")
+            st.stop()
 
-            angle_cols = shared_cols
-            tt = np.linspace(0, 1, int(N))
+        angle_cols = shared_cols
+        tt = np.linspace(0, 1, int(N))
 
-            coach_mean, coach_std, coach_stack = mean_std_normalized_rep(df_coach, coach_reps, angle_cols, N=int(N))
-            user_mean, user_std, user_stack = mean_std_normalized_rep(df_user, user_reps, angle_cols, N=int(N))
+        coach_mean, coach_std, coach_stack = mean_std_normalized_rep(df_coach, coach_reps, angle_cols, N=int(N))
+        user_mean, user_std, user_stack = mean_std_normalized_rep(df_user, user_reps, angle_cols, N=int(N))
 
-            st.session_state.update(
-                {
-                    "coach_driver": coach_driver,
-                    "coach_reps": coach_reps,
-                    "user_reps": user_reps,
-                    "coach_driver_smooth": coach_driver_smooth,
-                    "user_driver_smooth": user_driver_smooth,
-                    "angle_cols": angle_cols,
-                    "N": int(N),
-                    "tt": tt,
-                    "coach_mean": coach_mean,
-                    "coach_std": coach_std,
-                    "coach_stack": coach_stack,
-                    "user_mean": user_mean,
-                    "user_std": user_std,
-                    "user_stack": user_stack,
-                    "stage2_done": True,
-                }
-            )
+        st.session_state.update(
+            {
+                "coach_driver": coach_driver,
+                "coach_reps": coach_reps,
+                "user_reps": user_reps,
+                "coach_driver_smooth": coach_driver_smooth,
+                "user_driver_smooth": user_driver_smooth,
+                "angle_cols": angle_cols,
+                "N": int(N),
+                "tt": tt,
+                "coach_mean": coach_mean,
+                "coach_std": coach_std,
+                "coach_stack": coach_stack,
+                "user_mean": user_mean,
+                "user_std": user_std,
+                "user_stack": user_stack,
+                "stage2_done": True,
+            }
+        )
 
-            st.success("Stage 2 complete: Reference envelope built")
+        st.success("Stage 2 complete: Reference envelope built")
 
     # Continue to Stage 3 if Stage 2 is done
     if st.session_state.get("stage2_done", False) and not st.session_state.get("processing_complete", False):
@@ -1799,7 +2012,7 @@ with tab_run:
         )
 
         final_tip = base_tip
-        if use_gemini:
+        if LLM_AVAILABLE:
             try:
                 final_tip = generate_personality_tip(
                     analysis=chosen,
@@ -1882,7 +2095,7 @@ with tab_run:
         # Gemini Feedback (prominent)
         st.markdown("### Coaching Feedback")
         if final_tip.get("one_sentence_tip"):
-            tip_style = st.session_state.get("personality_style", "Supportive coach") if use_gemini else "Supportive coach"
+            tip_style = st.session_state.get("personality_style", "Supportive coach") if LLM_AVAILABLE else "Supportive coach"
 
             # Color code based on style
             if tip_style == "MEGA ROAST":
@@ -2161,11 +2374,112 @@ with tab_run:
                     st.session_state["s3_last_error"] = "No AWS credentials found."
                     st.error("AWS credentials not found. Make sure you configured credentials.")
                 except ClientError as e:
+                    error_code = e.response.get("Error", {}).get("Code", "Unknown")
+                    error_message = e.response.get("Error", {}).get("Message", str(e))
                     st.session_state["s3_last_error"] = str(e)
-                    st.error(f"S3 ClientError: {e}")
+
+                    st.error(f"❌ **S3 Upload Error**")
+                    if error_code == "AccessDenied":
+                        st.error(f"Access Denied: Your AWS credentials don't have permission to upload objects to bucket '{cfg['bucket']}'. Please ensure your IAM user has the 's3:PutObject' permission for this bucket.")
+
+                        st.warning("⚠️ **Your run data is saved locally, but S3 upload failed.**")
+                        st.info("💡 **How to fix this in AWS Console:**")
+
+                        with st.expander("📋 **Step-by-Step Instructions**", expanded=True):
+                            st.markdown("""
+                            **Step 1:** Go to [AWS IAM Console](https://console.aws.amazon.com/iam/) and sign in.
+
+                            **Step 2:** Click on "Users" in the left sidebar, then find and click on your IAM user (`daniel-aws`).
+
+                            **Step 3:** Click on the "Permissions" tab, then click "Add permissions" → "Create inline policy".
+
+                            **Step 4:** Click on the "JSON" tab and paste this policy:
+                            """)
+
+                            bucket_name = cfg["bucket"]
+                            policy_json = f'''{{
+    "Version": "2012-10-17",
+    "Statement": [
+        {{
+            "Effect": "Allow",
+            "Action": [
+                "s3:ListBucket",
+                "s3:GetObject",
+                "s3:PutObject"
+            ],
+            "Resource": [
+                "arn:aws:s3:::{bucket_name}",
+                "arn:aws:s3:::{bucket_name}/*"
+            ]
+        }}
+    ]
+}}'''
+
+                            st.code(policy_json, language="json")
+
+                            st.markdown("""
+                            **Step 5:** Click "Next", give the policy a name (e.g., `RoastCoachS3Access`), then click "Create policy".
+
+                            **Step 6:** Wait a few seconds for the policy to propagate, then try saving again.
+                            """)
+                    else:
+                        st.error(f"AWS Error ({error_code}): {error_message}")
+                        st.info("💡 Check your AWS credentials and bucket configuration in the `.env` file.")
                 except Exception as e:
-                    st.session_state["s3_last_error"] = str(e)
-                    st.error(f"Unexpected error: {type(e).__name__}: {e}")
+                    error_str = str(e)
+                    st.session_state["s3_last_error"] = error_str
+                    if "AWS S3 Error" in error_str and "AccessDenied" in error_str:
+                        # Show full instructions for AccessDenied errors
+                        st.error(f"❌ **S3 Upload Error**")
+                        st.error(f"Access Denied: Your AWS credentials don't have permission to upload objects to bucket '{cfg['bucket']}'. Please ensure your IAM user has the 's3:PutObject' permission for this bucket.")
+
+                        st.warning("⚠️ **Your run data is saved locally, but S3 upload failed.**")
+                        st.info("💡 **How to fix this in AWS Console:**")
+
+                        with st.expander("📋 **Step-by-Step Instructions**", expanded=True):
+                            st.markdown("""
+                            **Step 1:** Go to [AWS IAM Console](https://console.aws.amazon.com/iam/) and sign in.
+
+                            **Step 2:** Click on "Users" in the left sidebar, then find and click on your IAM user (`daniel-aws`).
+
+                            **Step 3:** Click on the "Permissions" tab, then click "Add permissions" → "Create inline policy".
+
+                            **Step 4:** Click on the "JSON" tab and paste this policy:
+                            """)
+
+                            bucket_name = cfg["bucket"]
+                            policy_json = f'''{{
+    "Version": "2012-10-17",
+    "Statement": [
+        {{
+            "Effect": "Allow",
+            "Action": [
+                "s3:ListBucket",
+                "s3:GetObject",
+                "s3:PutObject"
+            ],
+            "Resource": [
+                "arn:aws:s3:::{bucket_name}",
+                "arn:aws:s3:::{bucket_name}/*"
+            ]
+        }}
+    ]
+}}'''
+
+                            st.code(policy_json, language="json")
+
+                            st.markdown("""
+                            **Step 5:** Click "Next", give the policy a name (e.g., `RoastCoachS3Access`), then click "Create policy".
+
+                            **Step 6:** Wait a few seconds for the policy to propagate, then try saving again.
+                            """)
+                    elif "AWS S3 Error" in error_str or "AccessDenied" in error_str:
+                        st.error(f"❌ **S3 Upload Error**")
+                        st.error(error_str)
+                        st.info("💡 Check your AWS IAM permissions. You need `s3:PutObject` permission for the bucket.")
+                    else:
+                        st.error(f"Unexpected error: {type(e).__name__}: {error_str}")
+                        st.info("💡 Your run data is saved locally. Check your AWS configuration and try again.")
         elif st.session_state.get("saved_to_s3", False):
             st.divider()
             st.success("This run is already saved to S3.")
@@ -2175,7 +2489,7 @@ with tab_run:
 #           HISTORY
 # ==============================
 with tab_history:
-    st.subheader("History — Your past runs (from S3)")
+    st.subheader("History — Calendar View")
 
     cfg = s3_config()
     if not s3_enabled():
@@ -2187,123 +2501,282 @@ with tab_history:
             st.code("pip install boto3")
         st.stop()
 
-    st.caption(f"Bucket: `{cfg['bucket']}` | Region: `{cfg['region']}` | Prefix: `{cfg['prefix']}` | User: `{cfg['user_id']}`")
+    # Load manifests from S3
+    manifest_objs = []
+    error_msg = None
+    with st.spinner("Loading runs from S3..."):
+        try:
+            manifest_objs = s3_list_manifests_cached(
+                bucket=cfg["bucket"],
+                region=cfg["region"],
+                prefix=cfg["prefix"],
+                user_id=cfg["user_id"],
+                max_items=200,
+            )
+        except ClientError as e:
+            error_code = e.response.get("Error", {}).get("Code", "Unknown")
+            error_message = e.response.get("Error", {}).get("Message", str(e))
+            if error_code == "AccessDenied":
+                error_msg = f"Access Denied: Your AWS credentials don't have permission to list objects in bucket '{cfg['bucket']}'. Please ensure your IAM user has the 's3:ListBucket' permission for this bucket."
+            else:
+                error_msg = f"AWS Error ({error_code}): {error_message}"
+        except NoCredentialsError:
+            error_msg = "AWS credentials not found. Please set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY in your .env file."
+        except Exception as e:
+            error_msg = f"Unexpected error accessing S3: {str(e)}"
 
-    colA, colB = st.columns([1, 2])
-    with colA:
-        max_items = st.number_input("Max runs to show", min_value=5, max_value=200, value=50, step=5)
-    with colB:
-        st.caption("Tip: Save several sessions, then compare severity + confidence over time.")
+    if error_msg:
+        st.error(f"❌ **S3 Access Error**")
+        st.error(error_msg)
+        st.warning("⚠️ **The History tab requires AWS S3 permissions to list your saved runs.**")
+        st.info("💡 **How to fix this in AWS Console:**")
+        with st.expander("📋 **Step-by-Step Instructions**", expanded=True):
+            st.markdown("""
+            **Step 1:** Go to [AWS IAM Console](https://console.aws.amazon.com/iam/) and sign in.
 
-    with st.spinner("Loading run list from S3..."):
-        manifest_objs = s3_list_manifests_cached(
-            bucket=cfg["bucket"],
-            region=cfg["region"],
-            prefix=cfg["prefix"],
-            user_id=cfg["user_id"],
-            max_items=int(max_items),
-        )
+            **Step 2:** Click on "Users" in the left sidebar, then find and click on your IAM user.
+
+            **Step 3:** Click on the "Permissions" tab, then click "Add permissions" → "Create inline policy".
+
+            **Step 4:** Click on the "JSON" tab and paste this policy:
+            """)
+            bucket_name = cfg["bucket"]
+            policy_json = f'''{{
+    "Version": "2012-10-17",
+    "Statement": [
+        {{
+            "Effect": "Allow",
+            "Action": [
+                "s3:ListBucket",
+                "s3:GetObject"
+            ],
+            "Resource": [
+                "arn:aws:s3:::{bucket_name}",
+                "arn:aws:s3:::{bucket_name}/*"
+            ]
+        }}
+    ]
+}}'''
+            st.code(policy_json, language="json")
+        st.stop()
 
     if not manifest_objs:
         st.info("No runs found yet. Save a run to S3 from the Run tab, then come back here.")
         st.stop()
 
-    rows: List[Dict[str, Any]] = []
-    bad = 0
-    for obj in manifest_objs:
-        key = obj.get("key", "")
-        try:
-            m = s3_get_json_cached(cfg["bucket"], cfg["region"], key)
-            rows.append(parse_manifest_row(m, manifest_key=key, last_modified=obj.get("last_modified")))
-        except Exception:
-            bad += 1
+    # Load and parse all manifests, group by date
+    runs_by_date: Dict[str, List[Dict[str, Any]]] = {}
 
-    if bad:
-        st.warning(f"{bad} manifest(s) failed to parse (skipped).")
+    with st.spinner("Loading run details..."):
+        for obj in manifest_objs:
+            key = obj.get("key", "")
+            try:
+                manifest = s3_get_json_cached(cfg["bucket"], cfg["region"], key)
+                created_at_str = manifest.get("created_at_utc", "")
 
-    df_hist = pd.DataFrame(rows)
-    if df_hist.empty:
-        st.info("No readable manifests found.")
+                # Parse date from created_at_utc (format: "2026-02-01T10:30:00Z")
+                try:
+                    if created_at_str:
+                        created_dt = datetime.fromisoformat(created_at_str.replace('Z', '+00:00'))
+                        date_key = created_dt.date().isoformat()
+                    else:
+                        # Fallback to last_modified if created_at_utc is missing
+                        last_modified = obj.get("last_modified")
+                        if last_modified:
+                            date_key = last_modified.date().isoformat()
+                        else:
+                            continue
+                except Exception:
+                    continue
+
+                # Load analysis if available
+                analysis_data = None
+                analysis_summary = None
+                analysis_key = manifest.get("outputs", {}).get("analysis_s3_key")
+                if analysis_key:
+                    try:
+                        analysis_data = s3_get_json_cached(cfg["bucket"], cfg["region"], analysis_key)
+                        analysis_summary = extract_analysis_summary(analysis_data)
+                    except Exception:
+                        pass  # Skip if analysis can't be loaded
+
+                # Get tip
+                tip = (manifest.get("outputs", {}).get("tip", {}) or {}).get("one_sentence_tip", "")
+
+                # Build run data
+                run_data = {
+                    "run_id": manifest.get("run_id", ""),
+                    "exercise": manifest.get("exercise_label", "Unknown"),
+                    "created_at": created_at_str,
+                    "manifest_key": key,
+                    "tip": tip,
+                    "analysis_data": analysis_data,
+                    "analysis_summary": analysis_summary,
+                }
+
+                if date_key not in runs_by_date:
+                    runs_by_date[date_key] = []
+                runs_by_date[date_key].append(run_data)
+
+            except Exception:
+                continue  # Skip if manifest can't be loaded
+
+    # Sort runs within each date by created_at (newest first)
+    for date_key in runs_by_date:
+        runs_by_date[date_key].sort(key=lambda x: x.get("created_at", ""), reverse=True)
+
+    # Get available dates
+    available_dates = sorted([date.fromisoformat(d) for d in runs_by_date.keys()], reverse=True)
+
+    if not available_dates:
+        st.info("No runs found with valid dates. Save a run to S3 from the Run tab, then come back here.")
         st.stop()
 
-    df_hist_display = df_hist[["created_at_utc", "exercise_label", "coach_driver", "llm_style", "tip_preview", "run_id"]]
-    st.dataframe(df_hist_display, width='stretch', hide_index=True)
+    # Initialize session state for calendar and carousel
+    if "history_selected_date" not in st.session_state:
+        st.session_state["history_selected_date"] = available_dates[0]
 
-    run_options = df_hist["run_id"].tolist()
-    selected_run = st.selectbox("Select a run to view details", run_options, index=0)
+    if "history_video_index" not in st.session_state:
+        st.session_state["history_video_index"] = {}
 
-    sel_row = df_hist[df_hist["run_id"] == selected_run].iloc[0].to_dict()
-    manifest_key = sel_row["manifest_s3_key"]
+    # Calendar date selection
+    col_cal1, col_cal2 = st.columns([2, 1])
+    with col_cal1:
+        selected_date = st.date_input(
+            "Select Date",
+            value=st.session_state.get("history_selected_date") or available_dates[0],
+            min_value=min(available_dates) if available_dates else date.today(),
+            max_value=max(available_dates) if available_dates else date.today(),
+            key="history_date_picker"
+        )
+        st.session_state["history_selected_date"] = selected_date
 
-    st.divider()
-    st.markdown(f"### Run: `{selected_run}`")
-    st.caption(f"Manifest key: `{manifest_key}`")
+    with col_cal2:
+        st.caption(f"**{len(available_dates)}** days with videos")
+        total_runs = sum(len(runs) for runs in runs_by_date.values())
+        st.caption(f"**{total_runs}** total runs")
 
-    try:
-        manifest = s3_get_json_cached(cfg["bucket"], cfg["region"], manifest_key)
-    except Exception as e:
-        st.error("Failed to load manifest.")
-        st.caption(f"{type(e).__name__}: {e}")
+    # Get runs for selected date
+    date_key = selected_date.isoformat()
+    runs_for_date = runs_by_date.get(date_key, [])
+
+    if not runs_for_date:
+        st.info(f"No runs found for {selected_date.strftime('%B %d, %Y')}. Select a different date.")
         st.stop()
 
-    tip = (manifest.get("outputs", {}).get("tip", {}) or {})
-    if tip.get("one_sentence_tip"):
-        st.success(tip.get("one_sentence_tip"))
+    # Initialize video index for this date if not set
+    if date_key not in st.session_state["history_video_index"]:
+        st.session_state["history_video_index"][date_key] = 0
+
+    current_index = st.session_state["history_video_index"][date_key]
+    if current_index >= len(runs_for_date):
+        current_index = 0
+        st.session_state["history_video_index"][date_key] = 0
+
+    # Carousel navigation
+    col_nav1, col_nav2, col_nav3 = st.columns([1, 2, 1])
+    with col_nav1:
+        if st.button("◀", disabled=current_index == 0, key="prev_video", use_container_width=True):
+            st.session_state["history_video_index"][date_key] = max(0, current_index - 1)
+            st.rerun()
+
+    with col_nav2:
+        run_options = [f"Run {i+1}: {r.get('exercise', 'Unknown')}" for i, r in enumerate(runs_for_date)]
+        selected_run_idx = st.selectbox(
+            f"Select run ({len(runs_for_date)} total)",
+            range(len(runs_for_date)),
+            format_func=lambda x: run_options[x],
+            index=current_index,
+            key="run_selector"
+        )
+        if selected_run_idx != current_index:
+            st.session_state["history_video_index"][date_key] = selected_run_idx
+            st.rerun()
+
+    with col_nav3:
+        if st.button("▶", disabled=current_index >= len(runs_for_date) - 1, key="next_video", use_container_width=True):
+            st.session_state["history_video_index"][date_key] = min(len(runs_for_date) - 1, current_index + 1)
+            st.rerun()
+
+    # Get current run
+    current_run = runs_for_date[current_index]
+    summary = current_run.get("analysis_summary", {})
+    tip = current_run.get("tip", "")
+
+    # Summary statistics card
+    st.markdown("---")
+    st.markdown("""
+    <div class="history-stat-card">
+    """, unsafe_allow_html=True)
+
+    # Exercise name and date
+    col_title1, col_title2 = st.columns([2, 1])
+    with col_title1:
+        st.markdown(f"### {current_run['exercise']}")
+        created_at_str = current_run.get("created_at", "")
+        if created_at_str:
+            try:
+                created_dt = datetime.fromisoformat(created_at_str.replace('Z', '+00:00'))
+                st.caption(f"Uploaded: {created_dt.strftime('%B %d, %Y at %I:%M %p')}")
+            except Exception:
+                st.caption(f"Uploaded: {created_at_str}")
+
+    with col_title2:
+        st.markdown(f"**Run ID**")
+        st.caption(f"`{current_run['run_id']}`")
+
+    # Performance metrics
+    if summary:
+        st.markdown("#### Performance Metrics")
+        metric_col1, metric_col2, metric_col3, metric_col4 = st.columns(4)
+
+        with metric_col1:
+            st.metric("Confidence", f"{summary.get('avg_confidence', 0.0):.0%}")
+
+        with metric_col2:
+            st.metric("Total Reps", summary.get("total_reps", 0))
+
+        with metric_col3:
+            st.metric("Max Deviation", f"{summary.get('max_deviation', 0.0):.1f}°")
+
+        with metric_col4:
+            st.metric("Stability", f"{summary.get('avg_stability', 0.0):.0%}")
+
+        # Severity breakdown
+        severity_counts = summary.get("severity_counts", {})
+        st.markdown("#### Form Analysis")
+        severity_col1, severity_col2, severity_col3 = st.columns(3)
+
+        with severity_col1:
+            st.metric("Mild Issues", severity_counts.get("mild", 0), delta=None)
+
+        with severity_col2:
+            st.metric("Moderate Issues", severity_counts.get("moderate", 0), delta=None)
+
+        with severity_col3:
+            st.metric("Severe Issues", severity_counts.get("severe", 0), delta=None)
     else:
-        st.info("(No tip stored in manifest)")
+        st.info("Analysis data not available for this run.")
 
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        st.write("**Exercise**")
-        st.write(manifest.get("exercise_label", ""))
-    with c2:
-        st.write("**Created (UTC)**")
-        st.write(manifest.get("created_at_utc", ""))
-    with c3:
-        st.write("**Coach driver**")
-        st.write(manifest.get("outputs", {}).get("coach_driver", ""))
+    # Coaching tip
+    if tip:
+        st.markdown("#### Coaching Feedback")
+        st.info(f"💡 {tip}")
 
-    analysis_key = manifest.get("outputs", {}).get("analysis_s3_key")
-    if analysis_key:
-        st.markdown("### Analysis")
-        try:
-            analysis = s3_get_json_cached(cfg["bucket"], cfg["region"], analysis_key)
-            st.caption(f"Loaded analysis: `{analysis_key}`")
+    # Additional stats
+    if summary:
+        with st.expander("View Detailed Statistics"):
+            st.json({
+                "Average Confidence": f"{summary.get('avg_confidence', 0.0):.2%}",
+                "Total Reps": summary.get("total_reps", 0),
+                "Max Deviation": f"{summary.get('max_deviation', 0.0):.2f}°",
+                "Average Stability": f"{summary.get('avg_stability', 0.0):.2%}",
+                "Severity Breakdown": summary.get("severity_counts", {}),
+                "Upload Time": current_run.get("created_at", ""),
+            })
 
-            rep_rows = []
-            for rep in analysis:
-                events = rep.get("events", []) or []
-                sev = [e.get("severity") for e in events]
-                rep_rows.append(
-                    {
-                        "rep_id": rep.get("rep_id"),
-                        "confidence": rep.get("confidence"),
-                        "reference_stability": rep.get("reference_stability"),
-                        "num_events": len(events),
-                        "severe": sev.count("severe"),
-                        "moderate": sev.count("moderate"),
-                        "mild": sev.count("mild"),
-                    }
-                )
-            df_rep = pd.DataFrame(rep_rows).sort_values("rep_id")
-            st.dataframe(df_rep, width='stretch', hide_index=True)
+    st.markdown("</div>", unsafe_allow_html=True)
 
-            rep_pick_hist = st.selectbox(
-                "Inspect rep",
-                df_rep["rep_id"].tolist(),
-                index=0,
-                key=f"hist_rep_{selected_run}",
-            )
-            rep_obj = next((r for r in analysis if r.get("rep_id") == rep_pick_hist), None)
-            if rep_obj:
-                st.markdown("#### Rep events")
-                st.json(rep_obj.get("events", []))
-
-        except Exception as e:
-            st.warning("Could not load analysis.json for this run.")
-            st.caption(f"{type(e).__name__}: {e}")
-    else:
-        st.info("No analysis_s3_key in manifest.outputs (nothing to load).")
-
-    with st.expander("View full manifest.json"):
-        st.json(manifest)
+    # Progress indicator
+    st.markdown("---")
+    st.markdown(f'<p class="history-progress">{current_index + 1} of {len(runs_for_date)} runs for {selected_date.strftime("%B %d, %Y")}</p>', unsafe_allow_html=True)
